@@ -12,7 +12,7 @@ import {
 
 const API = 'http://127.0.0.1:8000'
 
-const STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED']
+const STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
 const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google']
 
 const STATUS_STYLES = {
@@ -24,6 +24,7 @@ const STATUS_STYLES = {
   MISMATCH: 'bg-orange-100 text-orange-700 ring-orange-200 dark:bg-orange-900 dark:text-orange-300 dark:ring-orange-800',
   EXP_GAP: 'bg-violet-100 text-violet-700 ring-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:ring-violet-800',
   EXPIRED: 'bg-neutral-400 text-white ring-neutral-400 dark:bg-neutral-600 dark:text-neutral-200 dark:ring-neutral-600',
+  DUPLICATE: 'bg-neutral-200 text-neutral-500 ring-neutral-300 line-through dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700',
 }
 
 // Negative-status hide pills: active (hiding) color per status.
@@ -33,8 +34,9 @@ const HIDE_ACTIVE_STYLES = {
   MISMATCH: 'bg-orange-500 text-white ring-orange-500 dark:bg-orange-500 dark:ring-orange-500',
   EXP_GAP: 'bg-violet-500 text-white ring-violet-500 dark:bg-violet-500 dark:ring-violet-500',
   EXPIRED: 'bg-neutral-600 text-white ring-neutral-600 dark:bg-neutral-500 dark:ring-neutral-500',
+  DUPLICATE: 'bg-neutral-400 text-white ring-neutral-400 dark:bg-neutral-600 dark:ring-neutral-600',
 }
-const HIDEABLE = ['SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED']
+const HIDEABLE = ['SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
 
 const SOURCE_STYLES = {
   indeed: 'bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300',
@@ -775,6 +777,11 @@ export default function App() {
             label="Expired (all time)"
             value={stats?.by_status?.EXPIRED ?? 0}
             accent="bg-neutral-400"
+          />
+          <StatCard
+            label="Duplicates (all time)"
+            value={stats?.by_status?.DUPLICATE ?? 0}
+            accent="bg-neutral-300"
           />
           <StatCard
             label={`Decided this week (${barData.length} day${barData.length === 1 ? '' : 's'})`}

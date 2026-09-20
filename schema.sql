@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   url TEXT UNIQUE NOT NULL,       -- dedupe key, mirrors current normalized-URL logic
   location TEXT,
   date_posted DATE,
-  status TEXT NOT NULL DEFAULT 'NEW',  -- NEW/REVIEWED/APPLIED/SKIP/REJECTED/MISMATCH/EXP_GAP/EXPIRED
+  status TEXT NOT NULL DEFAULT 'NEW',  -- NEW/REVIEWED/APPLIED/SKIP/REJECTED/MISMATCH/EXP_GAP/EXPIRED/DUPLICATE
   scraped_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   applied_at TIMESTAMPTZ,
   status_updated_at TIMESTAMPTZ NOT NULL DEFAULT now()  -- last dashboard decision time

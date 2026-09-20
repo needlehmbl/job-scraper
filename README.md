@@ -146,9 +146,9 @@ auto-filter, e.g. `+12 new (300 checked, 24 auto-filtered
 the top drop reasons from the feedback learner (see below).
 
 - **Status** badge is a dropdown — set `REVIEWED` / `APPLIED` / `SKIP` /
-  `REJECTED` / `MISMATCH` / `EXP_GAP` / `EXPIRED` directly (`MISMATCH` = wrong role or
+  `REJECTED` / `MISMATCH` / `EXP_GAP` / `EXPIRED` / `DUPLICATE` directly (`MISMATCH` = wrong role or
   fit, `EXP_GAP` = needs more experience than you have, `EXPIRED` = dead
-  link, archived and ignored by the learner). Moving to `APPLIED`
+  link, `DUPLICATE` = repeat posting of a row you're already tracking — see below). Moving to `APPLIED`
   from it clears `applied_at` so the chart stays accurate. Every change is
   also recorded in `job_status_history` with a timestamp, which powers the
    applied-vs-rejected-vs-skipped-vs-mismatch-vs-expgap graph and the scraper's feedback learner.
@@ -171,9 +171,16 @@ the top drop reasons from the feedback learner (see below).
   restrict the whole query (e.g. `title:python backend, jr | junior`).
   First matching term is highlighted in the table.
 - **Negative filter-out tags:** the `✕ SKIP (n)` / `✕ REJECTED (n)` /
-  `✕ MISMATCH (n)` / `✕ EXP_GAP (n)` / `✕ EXPIRED (n)` pills
+  `✕ MISMATCH (n)` / `✕ EXP_GAP (n)` / `✕ EXPIRED (n)` / `✕ DUPLICATE (n)` pills
   next to the status dropdown hide those postings from the table (counts
   shown). Picking an explicit status in the dropdown overrides them.
+- **Duplicates:** dedupe is URL-based, so the same role reposted under a
+  new link (or cross-posted across boards) still lands as separate rows —
+  e.g. several identical `Application Support Engineer @ Accenture` rows
+  with different Indeed/LinkedIn IDs. Keep one canonical row and set the
+  repeats to `DUPLICATE` (bulk-select works for this), then hide them with
+  the `✕ DUPLICATE` pill. Like `EXPIRED`, it archives the row and never
+  trains the learner.
 
 `apply_helper.py` is unchanged in purpose but is no longer triggered by the
 dashboard (Apply now just opens a new tab). It's still there for manual CLI
@@ -228,7 +235,8 @@ file upload is attempted.
 
 Marking postings `REJECTED` / `SKIP` / `MISMATCH` / `EXP_GAP`
 (vs `APPLIED` / `REVIEWED`) teaches the
-next scrape what to drop, via `feedback.py` (see `config.yaml` → `feedback:`):
+next scrape what to drop, via `feedback.py` (see `config.yaml` → `feedback:`).
+`NEW`, `EXPIRED` and `DUPLICATE` never train the learner.
 
 - **Heuristic (no API needed):** once you have `min_samples` decided jobs
   (default 10), title tokens, two-word phrases, and companies you
