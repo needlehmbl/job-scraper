@@ -9,6 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { defaultKeeper, findDuplicateGroups } from './duplicates.js'
 
 const API = 'http://127.0.0.1:8000'
 
@@ -212,6 +213,9 @@ export default function App() {
   const [scrapedDir, setScrapedDir] = useState(null) // null | 'desc' | 'asc'
   const [filteredNote, setFilteredNote] = useState('')
   const [restoring, setRestoring] = useState(null)
+  const [showDupes, setShowDupes] = useState(false)
+  const [keepers, setKeepers] = useState({})
+  const [dupeBusy, setDupeBusy] = useState(null)
 
   const [resumes, setResumes] = useState([])
   const [defaultResume, setDefaultResume] = useState('')
@@ -333,6 +337,13 @@ export default function App() {
     [filteredJobs]
   )
 
+  const dupeGroups = useMemo(() => findDuplicateGroups(jobs), [jobs])
+
+  const dupeExtraRows = useMemo(
+    () => dupeGroups.reduce((n, g) => n + g.rows.length - 1, 0),
+    [dupeGroups]
+  )
+
   const visibleFiltered = useMemo(
     () => pendingFiltered.filter((job) => matchesSearch(job, parsedSearch)),
     [pendingFiltered, parsedSearch]
@@ -435,6 +446,36 @@ export default function App() {
       await fetchAll()
     },
     [fetchAll]
+  )
+
+  const markGroupDupe = useCallback(
+    async (group) => {
+      const keeper = keepers[group.key] ?? defaultKeeper(group)
+      const rest = group.rows.filter((r) => r.id !== keeper)
+      if (!rest.length) return
+      setDupeBusy(group.key)
+      try {
+        await Promise.all(
+          rest.map((r) =>
+            fetch(`${API}/jobs/${r.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: 'DUPLICATE' }),
+            })
+          )
+        )
+        setKeepers((prev) => {
+          const next = { ...prev }
+          delete next[group.key]
+          return next
+        })
+      } catch (e) {
+        console.error('mark duplicates failed:', e)
+      }
+      await fetchAll()
+      setDupeBusy(null)
+    },
+    [keepers, fetchAll]
   )
 
   const handleScrape = useCallback(async () => {
@@ -935,6 +976,89 @@ export default function App() {
             </span>
           )}
         </section>
+
+        {tab === 'jobs' && dupeGroups.length > 0 && (
+        <section className="mt-6 overflow-hidden rounded-xl border border-amber-200 bg-white dark:border-amber-900 dark:bg-neutral-900">
+          <button
+            onClick={() => setShowDupes((v) => !v)}
+            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-amber-50 dark:hover:bg-neutral-800/50"
+            title="Same normalized title at the same company — pick a keeper per group, mark the rest DUPLICATE"
+          >
+            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+              {showDupes ? '▾' : '▸'} Possible duplicates — {dupeGroups.length} group{dupeGroups.length === 1 ? '' : 's'}, {dupeExtraRows} repeat row{dupeExtraRows === 1 ? '' : 's'}
+            </span>
+            <span className="text-xs text-neutral-400 dark:text-neutral-500">
+              same title + company · you confirm each group
+            </span>
+          </button>
+          {showDupes && (
+          <div className="divide-y divide-neutral-100 border-t border-amber-200 dark:divide-neutral-800 dark:border-amber-900">
+            {dupeGroups.map((group) => {
+              const keeper = keepers[group.key] ?? defaultKeeper(group)
+              const busy = dupeBusy === group.key
+              return (
+                <div key={group.key} className="px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
+                      {group.rows[0].title}{' '}
+                      <span className="font-normal text-neutral-500 dark:text-neutral-400">
+                        @ {group.rows[0].company} ({group.rows.length})
+                      </span>
+                    </p>
+                    <button
+                      onClick={() => markGroupDupe(group)}
+                      disabled={busy}
+                      className="ml-auto rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                    >
+                      {busy ? 'Marking…' : `Keep selected, mark other ${group.rows.length - 1} DUPLICATE`}
+                    </button>
+                  </div>
+                  <ul className="mt-2 space-y-1.5">
+                    {group.rows.map((row) => (
+                      <li key={row.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+                        <input
+                          type="radio"
+                          name={`keeper-${group.key}`}
+                          checked={keeper === row.id}
+                          onChange={() => setKeepers((prev) => ({ ...prev, [group.key]: row.id }))}
+                          title="Keep this one, mark the rest DUPLICATE"
+                          className="accent-neutral-800"
+                        />
+                        <a
+                          href={row.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-medium text-neutral-700 hover:underline dark:text-neutral-300"
+                        >
+                          #{row.id} · {row.location || '—'}
+                        </a>
+                        <span
+                          className={`inline-block rounded px-2 py-0.5 text-xs font-medium capitalize ${
+                            SOURCE_STYLES[row.source] || 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
+                          }`}
+                        >
+                          {row.source || '—'}
+                        </span>
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${
+                            STATUS_STYLES[row.status] || 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
+                          }`}
+                        >
+                          {row.status}
+                        </span>
+                        <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                          scraped {timeAgo(row.scraped_at)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            })}
+          </div>
+          )}
+        </section>
+        )}
 
         {tab === 'jobs' && (
         <section className="mt-6 flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">

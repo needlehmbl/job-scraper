@@ -177,10 +177,15 @@ the top drop reasons from the feedback learner (see below).
 - **Duplicates:** dedupe is URL-based, so the same role reposted under a
   new link (or cross-posted across boards) still lands as separate rows —
   e.g. several identical `Application Support Engineer @ Accenture` rows
-  with different Indeed/LinkedIn IDs. Keep one canonical row and set the
-  repeats to `DUPLICATE` (bulk-select works for this), then hide them with
-  the `✕ DUPLICATE` pill. Like `EXPIRED`, it archives the row and never
-  trains the learner.
+  with different Indeed/LinkedIn IDs. The **Possible duplicates** panel
+  above the table groups these automatically (same normalized title +
+  company, so `Accenture` and `Accenture in the Philippines` merge): open
+  it, pick the keeper per group with the radio button (defaults to a row
+  you already acted on, else the earliest scraped), and one click marks
+  the rest `DUPLICATE`. Grouping is only a suggestion — nothing changes
+  until you confirm. Manual marking still works too (bulk-select works
+  for this). Hide it all with the `✕ DUPLICATE` pill. Like `EXPIRED`,
+  `DUPLICATE` archives the row and never trains the learner.
 
 `apply_helper.py` is unchanged in purpose but is no longer triggered by the
 dashboard (Apply now just opens a new tab). It's still there for manual CLI
