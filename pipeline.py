@@ -42,6 +42,10 @@ def _source(row) -> str:
         url = _clean(row.get("job_url", "")).lower()
         if "jobstreet" in url:
             return "jobstreet"
+        if "boards.greenhouse.io" in url or "greenhouse" in url:
+            return "greenhouse"
+        if "lever.co" in url:
+            return "lever"
         if "indeed" in url:
             return "indeed"
         if "linkedin" in url:
@@ -51,7 +55,8 @@ def _source(row) -> str:
         if "google" in url:
             return "google"
         return ""
-    for needle in ("indeed", "linkedin", "jobstreet", "glassdoor", "google"):
+    for needle in ("indeed", "linkedin", "jobstreet", "glassdoor", "google",
+                     "greenhouse", "lever"):
         if needle in site:
             return needle
     return site

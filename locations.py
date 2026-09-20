@@ -55,3 +55,25 @@ def is_metro_manila(location) -> bool:
     if not isinstance(location, str) or not location.strip():
         return True
     return bool(_METRO_MANILA_PAT.search(location))
+
+
+# Company career boards (Greenhouse/Lever) are curated targets, not open
+# nationwide searches, so they get a looser gate: an explicit NCR location
+# always passes, and a bare country/remote-PH location ("Philippines",
+# "Remote in the Philippines", "Philippines Remote") passes too -- board
+# data entry is inconsistent ("Manila" vs "Philippines" for the same
+# office). A named non-NCR city ("Cebu, Philippines") still fails.
+_PH_COUNTRY_ONLY_PAT = re.compile(
+    r"^\s*(remote(\s+in(\s+the)?)?\s*[-–,]?\s*)?(philippines|ph)\s*$"
+    r"|^\s*(philippines|ph)\s*[-–,]?\s*remote\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_ph_or_metro(location) -> bool:
+    """Loose location gate for curated company-board rows (see above)."""
+    if not isinstance(location, str) or not location.strip():
+        return True
+    if is_metro_manila(location):
+        return True
+    return bool(_PH_COUNTRY_ONLY_PAT.match(location.strip()))

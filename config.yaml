@@ -19,6 +19,11 @@ search:
     - "Software Engineer Trainee"
     - "Fresh Graduate IT"
     - "IT Support Specialist"
+    - "Programmer"
+    - "Frontend Developer"
+    - "JavaScript Developer"
+    - "Java Developer"
+    - ".NET Developer"
 
   # Location string as you'd type it into a job board. Kept tied to
   # Metro Manila + the Philippines Indeed domain so results stay local.
@@ -169,11 +174,24 @@ feedback:
   max_ai_tokens_per_day: 100000
   usage_state_path: "usage_state.json"
 
-# Greenhouse / Lever company boards to check directly (no scraping fragility).
-# Add company board slugs here, e.g. Greenhouse: "https://boards.greenhouse.io/<slug>"
+# Direct company career boards (Tier 1): public Greenhouse/Lever JSON APIs,
+# no browser needed. Slug = the board path (boards.greenhouse.io/<slug>,
+# lever.co/<slug>). Plain list uses the slug as the company name; mapping
+# form sets a display name, e.g. greenhouse: {"acme": "Acme Corp"}.
+# Board pulls ignore `hours_old` (career pages list evergreen postings;
+# dedupe keeps re-scrapes clean) and use a looser location gate (bare
+# "Philippines" / remote-PH passes; named non-NCR cities still fail).
+# Slugs below were validated live 2026-09-20; a dead board only logs a
+# warning and never breaks the rest of the scrape.
 company_boards:
-  greenhouse: []
-  lever: []
+  greenhouse:
+    - "moneysmart"        # Software Developer - Full Stack, Philippines
+    - "perform-careers"   # Python/AI Full-Stack Developer, Manila
+    # - "workstream"      # Manila roles, mostly senior/non-dev
+    # - "eucalyptus"      # 30+ Manila rows, mostly clinical/support
+    # - "cteph"           # remote-PH incl. DevOps roles
+  lever:
+    - "coins"             # Coins.ph, Taguig
 
 # Local output file -- one row per NEW job, appended across runs.
 # Existing rows are preserved; re-scraped jobs are skipped as duplicates.

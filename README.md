@@ -28,6 +28,7 @@ to postings from a browser tab.
 ```
 venv/bin/python main.py          scrape -> Postgres (jobs, scrape_runs)
 pipeline.py                     shared scrape pipeline (CLI + API button use the same code)
+greenhouse.py / lever.py          direct company-board scrapers (public JSON APIs, no browser) — slugs in `company_boards`
 filtered_jobs (Postgres)          postings the auto-filter held out, with per-row reason — reviewed in the dashboard's Filtered tab
 api/routes/filtered.py            GET /filtered, POST /filtered/{id}/restore, DELETE /filtered/{id}
 job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
@@ -362,9 +363,17 @@ since it aggregates other boards. Each board also adds scrape time and a
 little more 400/ban risk from JobSpy's reverse-engineered APIs.
 
 Higher-signal than more JobSpy boards for junior Manila tech roles: wire up
-`config.yaml`'s `company_boards` placeholder (Greenhouse/Lever direct ATS
-JSON — stabler than scraping) or add PH-specific Playwright scrapers in the
-style of `jobstreet.py` (e.g. Kalibrr, Bossjob).
+`config.yaml`'s `company_boards` section — Greenhouse (`boards.greenhouse.io/<slug>`
+via `boards-api.greenhouse.io`) and Lever (`lever.co/<slug>` via
+`api.lever.co`) expose public JSON, stabler than scraping. Seeded and
+validated 2026-09-20: `moneysmart` + `perform-careers` (Greenhouse),
+`coins` = Coins.ph in Taguig (Lever). Board pulls ignore `hours_old`
+(career pages list evergreen postings; dedupe keeps re-scrapes clean) and
+use a looser location gate (bare `Philippines` / remote-PH passes; named
+non-NCR cities still fail) — the full keyword + experience + learner
+filters still apply downstream. For fully custom career pages, add
+PH-specific Playwright scrapers in the style of `jobstreet.py` (e.g.
+Kalibrr, Bossjob).
 
 ## Notes / limits
 

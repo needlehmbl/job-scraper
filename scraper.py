@@ -3,7 +3,9 @@ Scrapes job postings across configured sites/terms using python-jobspy,
 applies keyword + experience filters, and returns a deduplicated DataFrame.
 
 JobStreet is not supported by jobspy, so it is handled separately by
-jobstreet.py (headless Chromium); this module merges its results in.
+jobstreet.py (headless Chromium); direct company boards (Greenhouse/Lever
+JSON APIs) are handled by greenhouse.py / lever.py. This module merges all
+frames in.
 """
 import re
 
@@ -11,8 +13,10 @@ import yaml
 import pandas as pd
 from jobspy import scrape_jobs
 
+import greenhouse
 import jobstreet
-from locations import is_metro_manila
+import lever
+from locations import is_metro_manila, is_ph_or_metro
 
 # Last run's feedback-filter breakdown, filled by apply_feedback_filter
 # (keys: heuristic_dropped, heuristic_reasons, ai_dropped, ai_provider).
@@ -192,6 +196,36 @@ def scrape(cfg: dict) -> pd.DataFrame:
         if js_df is not None and not js_df.empty:
             all_frames.append(js_df)
 
+    # Direct company boards (Greenhouse/Lever JSON APIs, no browser needed).
+    # Slugs live in top-level `company_boards:` (list or {slug: name});
+    # one failing board must never poison the others. Boards ignore
+    # `hours_old` on purpose: career pages list evergreen postings that are
+    # rarely re-touched, so an hours cutoff would zero them out -- dedupe
+    # against `jobs` keeps re-scrapes from re-adding them.
+    for mod, label in ((greenhouse, "greenhouse"), (lever, "lever")):
+        slugs = (cfg.get("company_boards") or {}).get(label, [])
+        if not slugs:
+            continue
+        try:
+            if label == "greenhouse":
+                b_df = mod.scrape_greenhouse(
+                    slugs,
+                    max_results=s.get("results_wanted", 50),
+                    hours_old=None,
+                )
+            else:
+                b_df = mod.scrape_lever(
+                    slugs,
+                    max_results=s.get("results_wanted", 50),
+                    hours_old=None,
+                )
+        except Exception as e:
+            print(f"[scraper] WARNING: {label} boards scrape failed: {e}")
+            b_df = None
+        if b_df is not None and not b_df.empty:
+            b_df["_loose_location"] = True
+            all_frames.append(b_df)
+
     if not all_frames:
         return pd.DataFrame()
 
@@ -243,10 +277,20 @@ def apply_keyword_filters(df: pd.DataFrame, s: dict) -> pd.DataFrame:
 
     mask = df["title"].apply(title_ok) & df["company"].apply(company_ok)
     if "location" in df.columns:
-        mask = mask & df["location"].apply(is_metro_manila)
+        def loc_ok(row) -> bool:
+            # Curated company boards get the looser PH gate (bare
+            # "Philippines" passes); open board searches stay strict.
+            if row.get("_loose_location") is True:
+                return is_ph_or_metro(row.get("location", ""))
+            return is_metro_manila(row.get("location", ""))
+        mask = mask & df.apply(loc_ok, axis=1)
     if "description" in df.columns:
         mask = mask & df["description"].apply(experience_ok)
-    return df[mask]
+    out = df[mask]
+    # Internal marker, never persisted (pipeline only reads known keys).
+    if "_loose_location" in out.columns:
+        out = out.drop(columns=["_loose_location"])
+    return out
 
 
 def apply_feedback_filter(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:

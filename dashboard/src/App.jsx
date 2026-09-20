@@ -14,7 +14,7 @@ import { defaultKeeper, findDuplicateGroups } from './duplicates.js'
 const API = 'http://127.0.0.1:8000'
 
 const STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
-const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google']
+const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google', 'greenhouse', 'lever']
 
 const STATUS_STYLES = {
   NEW: 'bg-neutral-800 text-white ring-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:ring-neutral-100',
@@ -45,6 +45,8 @@ const SOURCE_STYLES = {
   jobstreet: 'bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-900 dark:text-fuchsia-300',
   glassdoor: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300',
   google: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300',
+  greenhouse: 'bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300',
+  lever: 'bg-cyan-100 text-cyan-700 dark:bg-cyan-900 dark:text-cyan-300',
 }
 
 function fmtDate(v) {
