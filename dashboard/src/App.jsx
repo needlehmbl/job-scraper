@@ -450,8 +450,12 @@ export default function App() {
 
   const markGroupDupe = useCallback(
     async (group) => {
-      const keeper = keepers[group.key] ?? defaultKeeper(group)
-      const rest = group.rows.filter((r) => r.id !== keeper)
+      const kept = new Set(
+        (keepers[group.key] ?? [defaultKeeper(group)]).filter((id) =>
+          group.rows.some((r) => r.id === id)
+        )
+      )
+      const rest = group.rows.filter((r) => !kept.has(r.id))
       if (!rest.length) return
       setDupeBusy(group.key)
       try {
@@ -982,7 +986,7 @@ export default function App() {
           <button
             onClick={() => setShowDupes((v) => !v)}
             className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-amber-50 dark:hover:bg-neutral-800/50"
-            title="Same normalized title at the same company — pick a keeper per group, mark the rest DUPLICATE"
+            title="Same normalized title at the same company — tick the rows to keep per group, mark the rest DUPLICATE"
           >
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
               {showDupes ? '▾' : '▸'} Possible duplicates — {dupeGroups.length} group{dupeGroups.length === 1 ? '' : 's'}, {dupeExtraRows} repeat row{dupeExtraRows === 1 ? '' : 's'}
@@ -994,7 +998,12 @@ export default function App() {
           {showDupes && (
           <div className="divide-y divide-neutral-100 border-t border-amber-200 dark:divide-neutral-800 dark:border-amber-900">
             {dupeGroups.map((group) => {
-              const keeper = keepers[group.key] ?? defaultKeeper(group)
+              const keptIds = new Set(
+                (keepers[group.key] ?? [defaultKeeper(group)]).filter((id) =>
+                  group.rows.some((r) => r.id === id)
+                )
+              )
+              const nMark = group.rows.length - keptIds.size
               const busy = dupeBusy === group.key
               return (
                 <div key={group.key} className="px-4 py-3">
@@ -1007,21 +1016,35 @@ export default function App() {
                     </p>
                     <button
                       onClick={() => markGroupDupe(group)}
-                      disabled={busy}
+                      disabled={busy || nMark === 0}
+                      title="Checked rows stay, unchecked rows become DUPLICATE"
                       className="ml-auto rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
                     >
-                      {busy ? 'Marking…' : `Keep selected, mark other ${group.rows.length - 1} DUPLICATE`}
+                      {busy ? 'Marking…' : nMark === 0 ? 'All checked — nothing to mark' : `Mark unchecked ${nMark} DUPLICATE`}
                     </button>
                   </div>
                   <ul className="mt-2 space-y-1.5">
                     {group.rows.map((row) => (
                       <li key={row.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
                         <input
-                          type="radio"
-                          name={`keeper-${group.key}`}
-                          checked={keeper === row.id}
-                          onChange={() => setKeepers((prev) => ({ ...prev, [group.key]: row.id }))}
-                          title="Keep this one, mark the rest DUPLICATE"
+                          type="checkbox"
+                          checked={keptIds.has(row.id)}
+                          onChange={() =>
+                            setKeepers((prev) => {
+                              const cur = new Set(
+                                (prev[group.key] ?? [defaultKeeper(group)]).filter((id) =>
+                                  group.rows.some((r) => r.id === id)
+                                )
+                              )
+                              if (cur.has(row.id)) {
+                                cur.delete(row.id)
+                              } else {
+                                cur.add(row.id)
+                              }
+                              return { ...prev, [group.key]: [...cur] }
+                            })
+                          }
+                          title="Keep this one — unchecked rows get marked DUPLICATE"
                           className="accent-neutral-800"
                         />
                         <a

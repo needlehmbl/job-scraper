@@ -180,9 +180,9 @@ the top drop reasons from the feedback learner (see below).
   with different Indeed/LinkedIn IDs. The **Possible duplicates** panel
   above the table groups these automatically (same normalized title +
   company, so `Accenture` and `Accenture in the Philippines` merge): open
-  it, pick the keeper per group with the radio button (defaults to a row
+  it, tick the rows worth keeping per group (the default tick is a row
   you already acted on, else the earliest scraped), and one click marks
-  the rest `DUPLICATE`. Grouping is only a suggestion — nothing changes
+  the unticked ones `DUPLICATE`. Grouping is only a suggestion — nothing changes
   until you confirm. Manual marking still works too (bulk-select works
   for this). Hide it all with the `✕ DUPLICATE` pill. Like `EXPIRED`,
   `DUPLICATE` archives the row and never trains the learner.
