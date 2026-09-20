@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Run the scraper, then make sure API + dashboard are up and open the
-# dashboard in the default browser.
+# Make sure API + dashboard are up and open the dashboard in the default
+# browser. Open-only: scraping is done from the dashboard's
+# "Scrape new jobs" button (same pipeline as `venv/bin/python main.py`).
 #
 # Usage:
-#   ./run_and_open.sh                # scrape + open dashboard
-#   ./run_and_open.sh --legacy-xlsx  # also mirror to applications.xlsx
+#   ./run_and_open.sh
 #
 # Scheduled (timer) auto-open is intentionally NOT wired up anymore -- the
-# user scrapped scheduled fires. Run this manually whenever you want fresh
-# postings reviewed right away.
+# user scrapped scheduled fires. Run this manually whenever you want to
+# review postings right away.
 set -e
 
 cd "$(dirname "$0")"
@@ -18,11 +18,9 @@ DASH_URL="http://localhost:5173"
 API_LOG="api.log"
 DASH_LOG="dashboard.log"
 
-echo "[run_and_open] scraping..."
-if [ -x venv/bin/python ]; then
-    venv/bin/python main.py "$@"
-else
-    python3 main.py "$@"
+if [ "$#" -gt 0 ]; then
+    echo "[run_and_open] note: scraping moved to the dashboard's 'Scrape new jobs' button;" >&2
+    echo "[run_and_open] note: ignoring command-line args: $*" >&2
 fi
 
 # --- start the API if it isn't already serving ---

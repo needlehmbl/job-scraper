@@ -31,7 +31,7 @@ pipeline.py                     shared scrape pipeline (CLI + API button use the
 job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
 job-dashboard-web.service         systemd user unit: Vite + React + Tailwind dev server on :5173
 dashboard/                        Vite + React + Tailwind dev server on :5173
-run_and_open.sh                   scrape, ensure both servers, open the dashboard
+run_and_open.sh                   ensure both servers, open the dashboard (open-only; scraping lives in the dashboard's Scrape button)
 stop.sh                           stop the API/dashboard + any leftover browser processes
 apply_helper.py                   opens a job URL in a real browser and prefills form fields
 notifier.py                       tails runs.log -> desktop notification (unchanged)
@@ -71,11 +71,10 @@ with the `DATABASE_URL` env var if you ever point it elsewhere.
 ## 3. Run it
 
 ```bash
-./run_and_open.sh                      # scrape + open dashboard
-./run_and_open.sh --legacy-xlsx        # also mirror new rows to applications.xlsx
+./run_and_open.sh                      # ensure servers are up + open dashboard (no scraping)
 ```
 
-Or scrape straight from the dashboard: open `http://localhost:5173` and hit
+Scraping is done from the dashboard: open `http://localhost:5173` and hit
 the **Scrape new jobs** button in the header. It runs the exact same pipeline
 as `main.py` (via `pipeline.py`) in the background — the button shows
 `Scraping…` while it runs, you can keep reviewing in the meantime, and the
@@ -90,11 +89,13 @@ venv/bin/python main.py                # scrape into Postgres (add --legacy-xlsx
 systemctl --user start job-dashboard-api job-dashboard-web   # or uvicorn / npm run dev directly
 ```
 
-`run_and_open.sh` ensures the API/dashboard servers are up (it starts the
+`run_and_open.sh` is open-only: it ensures the API/dashboard servers are up (it starts the
 systemd units if they're stopped, falling back to plain `nohup` processes if
 systemd is unavailable), then opens `http://localhost:5173` in your default
-browser. Manual CLI usage of the scraper still works (`venv/bin/python
-main.py`); running it repeatedly is safe because duplicates are skipped.
+browser. To scrape from a terminal instead of the dashboard button, run
+`venv/bin/python main.py` directly (add `--legacy-xlsx` to also mirror new
+rows to `applications.xlsx`, or pass `{"legacy_xlsx": true}` to `POST
+/scrape`); running it repeatedly is safe because duplicates are skipped.
 
 To shut everything down (including any stray `apply_helper.py` / Playwright
 browser left over from manual CLI use):
@@ -110,7 +111,8 @@ won't stick — use `stop.sh`, which stops the units themselves.
 
 The old `job-auto-apply.timer` (Mon/Wed/Fri 09:00) has been **disabled and
 unarmed** per request — no scheduled fires. `run_and_open.sh` is the manual
-entry point for turning freshly-scraped postings into a browser tab. The
+entry point for opening the dashboard in a browser tab (scraping now lives
+behind the dashboard's **Scrape new jobs** button). The
 timer/notifier unit files still exist under `~/.config/systemd/user/` if you
 want to re-enable or repurpose them later.
 
@@ -120,8 +122,8 @@ tails `runs.log`.
 ## 4. Review and apply
 
 Open the dashboard and check the **NEW** rows. Use the **Scrape new jobs**
-button in the header whenever you want fresh postings — no need to rerun
-`main.py` or `run_and_open.sh` from a terminal; duplicates are skipped, so
+button in the header whenever you want fresh postings — no need to run
+`main.py` from a terminal; duplicates are skipped, so
 re-scraping is always safe. After a scrape the header note breaks down the
 auto-filter, e.g. `+12 new (300 checked, 24 auto-filtered
 (location:cebu×8, title-keyword:senior×5))` — the top drop reasons from the
