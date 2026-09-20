@@ -166,3 +166,198 @@ def record_status_change(job_id: int, old_status, new_status: str, conn=None):
     finally:
         if own:
             conn.close()
+
+
+FILTERED_DDL = """
+CREATE TABLE IF NOT EXISTS filtered_jobs (
+  id SERIAL PRIMARY KEY,
+  source TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  company TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  location TEXT,
+  date_posted DATE,
+  description TEXT,
+  search_term TEXT,
+  filter_reason TEXT NOT NULL DEFAULT '',
+  filtered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  restored BOOLEAN NOT NULL DEFAULT FALSE
+);
+-- Partial unique index: real URLs dedupe, but rows scraped without a URL
+-- (rare -- the scraper normally drops those) are still storable.
+CREATE UNIQUE INDEX IF NOT EXISTS filtered_jobs_url_idx
+  ON filtered_jobs (url) WHERE url <> '';
+CREATE INDEX IF NOT EXISTS filtered_jobs_restored_idx ON filtered_jobs (restored);
+"""
+
+
+def ensure_filtered_schema(conn=None):
+    """Idempotently create the filtered-for-review table. Safe every startup."""
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(FILTERED_DDL)
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def _filtered_source(row: dict) -> str:
+    """Map a dropped posting onto the schema's source enum (no pipeline import)."""
+    site = (row.get("site") or "").strip().lower()
+    if site:
+        for needle in ("indeed", "linkedin", "jobstreet", "glassdoor", "google"):
+            if needle in site:
+                return needle
+        return site
+    url = (row.get("job_url") or row.get("url") or "").lower()
+    for needle in ("indeed", "linkedin", "jobstreet", "glassdoor", "google"):
+        if needle in url:
+            return needle
+    return ""
+
+
+def save_filtered_jobs(rows: list[dict], conn=None) -> int:
+    """Persist feedback-filtered postings for dashboard review.
+
+    Rows already tracked in `jobs` (e.g. previously restored) are skipped.
+    Rows without a URL are skipped (they can't be restored meaningfully).
+    A re-filtered URL refreshes its reason/time and re-appears
+    (restored=FALSE). Returns the number of rows upserted.
+    """
+    if not rows:
+        return 0
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor() as cur:
+            urls = [((r.get("job_url") or r.get("url") or "").strip().lower().rstrip("/"))
+                    for r in rows]
+            cur.execute("SELECT url FROM jobs WHERE url = ANY(%s)",
+                        ([u for u in urls if u],))
+            have = {x[0] for x in cur.fetchall()}
+            n = 0
+            for r, url in zip(rows, urls):
+                if not url or url in have:
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO filtered_jobs
+                      (source, title, company, url, location, date_posted,
+                       description, search_term, filter_reason)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (url) WHERE url <> '' DO UPDATE SET
+                      source = EXCLUDED.source,
+                      title = EXCLUDED.title,
+                      company = EXCLUDED.company,
+                      location = EXCLUDED.location,
+                      date_posted = EXCLUDED.date_posted,
+                      description = EXCLUDED.description,
+                      search_term = EXCLUDED.search_term,
+                      filter_reason = EXCLUDED.filter_reason,
+                      filtered_at = now(),
+                      restored = FALSE
+                    """,
+                    (_filtered_source(r),
+                     (r.get("title") or "").strip(),
+                     (r.get("company") or "").strip(),
+                     url,
+                     (r.get("location") or "").strip() or None,
+                     r.get("date_posted"),
+                     (r.get("description") or "").strip() or None,
+                     (r.get("matched_search_term") or r.get("search_term") or "").strip() or None,
+                     (r.get("filter_reason") or "").strip()),
+                )
+                n += 1
+            conn.commit()
+            return n
+    finally:
+        if own:
+            conn.close()
+
+
+def list_filtered_jobs(include_restored: bool = False, conn=None) -> list[dict]:
+    """Newest-first filtered postings; restored ones hidden unless asked for."""
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT * FROM filtered_jobs
+                WHERE (restored = FALSE OR %s)
+                ORDER BY filtered_at DESC
+                """,
+                (include_restored,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+    finally:
+        if own:
+            conn.close()
+
+
+def restore_filtered_job(fid: int, conn=None) -> dict | None:
+    """Move a filtered posting back into `jobs` as NEW for applying.
+
+    Returns the jobs row (existing one if the URL is already tracked),
+    or None when the filtered id doesn't exist. The filtered row is kept
+    with restored=TRUE as an audit trail.
+    """
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM filtered_jobs WHERE id = %s", (fid,))
+            f = cur.fetchone()
+            if not f:
+                return None
+            f = dict(f)
+            url = (f.get("url") or "").lower().rstrip("/")
+            cur.execute("SELECT * FROM jobs WHERE url = %s", (url,))
+            job = cur.fetchone()
+            if job is None:
+                cur.execute(
+                    """
+                    INSERT INTO jobs (source, title, company, url, location, date_posted, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'NEW')
+                    ON CONFLICT (url) DO NOTHING
+                    RETURNING *
+                    """,
+                    (f.get("source") or "", f.get("title") or "",
+                     f.get("company") or "", url, f.get("location"),
+                     f.get("date_posted")),
+                )
+                job = cur.fetchone()
+                if job is None:  # lost a race with a concurrent insert; re-read
+                    cur.execute("SELECT * FROM jobs WHERE url = %s", (url,))
+                    job = cur.fetchone()
+            cur.execute("UPDATE filtered_jobs SET restored = TRUE WHERE id = %s",
+                        (fid,))
+            conn.commit()
+            return dict(job) if job else None
+    finally:
+        if own:
+            conn.close()
+
+
+def delete_filtered_job(fid: int, conn=None) -> bool:
+    """Permanently dismiss a filtered posting (it was filtered correctly)."""
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM filtered_jobs WHERE id = %s RETURNING id",
+                        (fid,))
+            gone = cur.fetchone() is not None
+            conn.commit()
+            return gone
+    finally:
+        if own:
+            conn.close()

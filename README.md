@@ -28,6 +28,8 @@ to postings from a browser tab.
 ```
 venv/bin/python main.py          scrape -> Postgres (jobs, scrape_runs)
 pipeline.py                     shared scrape pipeline (CLI + API button use the same code)
+filtered_jobs (Postgres)          postings the auto-filter held out, with per-row reason — reviewed in the dashboard's Filtered tab
+api/routes/filtered.py            GET /filtered, POST /filtered/{id}/restore, DELETE /filtered/{id}
 job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
 job-dashboard-web.service         systemd user unit: Vite + React + Tailwind dev server on :5173
 dashboard/                        Vite + React + Tailwind dev server on :5173
@@ -121,13 +123,27 @@ tails `runs.log`.
 
 ## 4. Review and apply
 
-Open the dashboard and check the **NEW** rows. Use the **Scrape new jobs**
-button in the header whenever you want fresh postings — no need to run
+Open the dashboard and check the **NEW** rows. The **Jobs** / **Filtered
+for review** tabs sit above the table:
+
+- **Jobs tab** — the main table. The **Scraped** column shows when each
+  posting entered the tracker (date + `xh ago`); click its header to sort
+  newest/oldest, so a fresh scrape is easy to tell apart from older rows.
+- **Filtered tab** — every posting the feedback learner held out of a
+  scrape, newest first, with the exact reason (`title-keyword:…`,
+  `location:…`, `company:…`, `ai:…`), the search term that found it, and an
+  expandable copy of the posting text. **Restore** moves one back into Jobs
+  as `NEW` so you can apply; **Dismiss** drops it permanently (a future
+  scrape can still hold the same URL again if it keeps matching). Only
+  scrapes run after this feature was added populate the tab — older
+  filtered-out postings were never stored and can't be recovered.
+
+Use the **Scrape new jobs** button in the header whenever you want fresh postings — no need to run
 `main.py` from a terminal; duplicates are skipped, so
 re-scraping is always safe. After a scrape the header note breaks down the
 auto-filter, e.g. `+12 new (300 checked, 24 auto-filtered
-(location:cebu×8, title-keyword:senior×5))` — the top drop reasons from the
-feedback learner (see below).
+(location:cebu×8, title-keyword:senior×5), 24 held for review in the Filtered tab)` —
+the top drop reasons from the feedback learner (see below).
 
 - **Status** badge is a dropdown — set `REVIEWED` / `APPLIED` / `SKIP` /
   `REJECTED` / `MISMATCH` / `EXP_GAP` / `EXPIRED` directly (`MISMATCH` = wrong role or
@@ -189,9 +205,15 @@ file upload is attempted.
   `venv/bin/python main.py`); `409` if one is already running. Optional body
   `{"legacy_xlsx": true}` mirrors to `applications.xlsx`.
 - `GET /scrape/status` — `idle | running | done | error` plus `added` /
-  `scraped` counts, the run `summary`, and the feedback breakdown
+  `scraped` counts, the run `summary`, `filtered_saved` (rows held in the
+  Filtered tab), and the feedback breakdown
   (`filtered`, `filter_reasons`); the dashboard polls this while the
   **Scrape new jobs** button shows `Scraping…`.
+- `GET /filtered` — held-out postings, newest first
+  (`?include_restored=true` keeps restored ones too).
+- `POST /filtered/{id}/restore` — move a held posting back into `jobs`
+  as `NEW` (filtered row kept with `restored: true` as an audit trail).
+- `DELETE /filtered/{id}` — dismiss a held posting permanently.
 - `GET /resumes` — uploaded resume library + default; `POST
   /resumes/upload` (multipart `.docx`, parsed server-side);
   `POST /resumes/default`; `DELETE /resumes/{name}`.
@@ -217,6 +239,11 @@ next scrape what to drop, via `feedback.py` (see `config.yaml` → `feedback:`):
   experience). Thresholds
   (`min_hits`, `min_reject_rate`, `min_phrase_hits`, ...) are tunable;
   set `enabled: false` to turn off.
+- **Restoring teaches too:** a Restore puts the posting back as `NEW`,
+  which the learner ignores — so after restoring, mark it
+  `REVIEWED`/`APPLIED` in Jobs. Those GOOD examples dilute the reject rate
+  of the token that banned it, which is what stops the filter from holding
+  its lookalikes next run.
 - **AI (needs a key in `.env`):** when `use_ai` is true and a key exists
   (`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, or
   `GEMINI_API_KEY` — auto-picked in that order, or pin one with

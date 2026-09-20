@@ -49,6 +49,14 @@ function fmtDate(v) {
   return String(v).slice(0, 10)
 }
 
+function fmtDateTime(v) {
+  if (!v) return '—'
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return String(v).slice(0, 16).replace('T', ' ')
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 function timeAgo(iso) {
   if (!iso) return 'never'
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
@@ -197,6 +205,11 @@ export default function App() {
   const [pendingApply, setPendingApply] = useState(null)
   const [scraping, setScraping] = useState(false)
   const [scrapeNote, setScrapeNote] = useState('')
+  const [tab, setTab] = useState('jobs')
+  const [filteredJobs, setFilteredJobs] = useState([])
+  const [scrapedDir, setScrapedDir] = useState(null) // null | 'desc' | 'asc'
+  const [filteredNote, setFilteredNote] = useState('')
+  const [restoring, setRestoring] = useState(null)
 
   const [resumes, setResumes] = useState([])
   const [defaultResume, setDefaultResume] = useState('')
@@ -233,23 +246,26 @@ export default function App() {
 
   const fetchAll = useCallback(async () => {
     try {
-      const [jobsRes, statsRes, runRes, resumesRes] = await Promise.all([
+      const [jobsRes, statsRes, runRes, resumesRes, filteredRes] = await Promise.all([
         fetch(API + '/jobs'),
         fetch(API + '/stats'),
         fetch(API + '/runs/latest'),
         fetch(API + '/resumes'),
+        fetch(API + '/filtered'),
       ])
-      const [j, st, r, res] = await Promise.all([
+      const [j, st, r, res, fj] = await Promise.all([
         jobsRes.json(),
         statsRes.json(),
         runRes.json(),
         resumesRes.json().catch(() => ({ resumes: [], default: '' })),
+        filteredRes.json().catch(() => []),
       ])
       setJobs(j)
       setStats(st)
       setLastRun(r)
       setResumes(res.resumes || [])
       setDefaultResume(res.default || '')
+      setFilteredJobs(Array.isArray(fj) ? fj : [])
       // Drop selections for rows that no longer exist.
       setSelected((prev) => prev.filter((id) => j.some((job) => job.id === id)))
     } catch (e) {
@@ -310,6 +326,30 @@ export default function App() {
     return counts
   }, [jobs])
 
+  const pendingFiltered = useMemo(
+    () => filteredJobs.filter((j) => !j.restored),
+    [filteredJobs]
+  )
+
+  const visibleFiltered = useMemo(
+    () => pendingFiltered.filter((job) => matchesSearch(job, parsedSearch)),
+    [pendingFiltered, parsedSearch]
+  )
+
+  const sortedJobs = useMemo(() => {
+    if (!scrapedDir) return filtered
+    const dir = scrapedDir === 'asc' ? 1 : -1
+    return [...filtered].sort(
+      (a, b) =>
+        dir *
+        (new Date(a.scraped_at || 0).getTime() - new Date(b.scraped_at || 0).getTime())
+    )
+  }, [filtered, scrapedDir])
+
+  const cycleScrapedSort = useCallback(() => {
+    setScrapedDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
+  }, [])
+
   const updateJobs = useCallback(
     (id, patch) => {
       setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, ...patch } : j)))
@@ -358,6 +398,43 @@ export default function App() {
     [updateJobs]
   )
 
+  const restoreFiltered = useCallback(
+    async (job) => {
+      setRestoring(job.id)
+      setFilteredNote('')
+      try {
+        const r = await fetch(`${API}/filtered/${job.id}/restore`, {
+          method: 'POST',
+        })
+        if (!r.ok) throw new Error(`restore failed (${r.status})`)
+        setFilteredNote(
+          `Restored "${job.title || 'Untitled'}" to Jobs as NEW — mark it REVIEWED/APPLIED there so the learner adjusts.`
+        )
+        setTab('jobs')
+      } catch (e) {
+        console.error('restore failed:', e)
+        setFilteredNote(`Restore failed: ${e.message}`)
+      }
+      await fetchAll()
+      setRestoring(null)
+    },
+    [fetchAll]
+  )
+
+  const deleteFiltered = useCallback(
+    async (job) => {
+      if (!window.confirm(`Dismiss "${job.title || 'Untitled'}" from review? (A future scrape can hold it again.)`))
+        return
+      try {
+        await fetch(`${API}/filtered/${job.id}`, { method: 'DELETE' })
+      } catch (e) {
+        console.error('filtered delete failed:', e)
+      }
+      await fetchAll()
+    },
+    [fetchAll]
+  )
+
   const handleScrape = useCallback(async () => {
     if (scraping) return
     setScraping(true)
@@ -393,9 +470,13 @@ export default function App() {
             s.filtered != null && s.filtered > 0
               ? `, ${s.filtered} auto-filtered${reasons ? ` (${reasons})` : ''}`
               : ''
+          const held =
+            s.filtered_saved != null && s.filtered_saved > 0
+              ? `, ${s.filtered_saved} held for review in the Filtered tab`
+              : ''
           setScrapeNote(
             s.added != null
-              ? `Scrape finished: +${s.added} new (${s.scraped ?? 0} checked${filt})`
+              ? `Scrape finished: +${s.added} new (${s.scraped ?? 0} checked${filt}${held})`
               : 'Scrape finished.'
           )
         } else {
@@ -818,6 +899,37 @@ export default function App() {
           )}
         </section>
 
+        <section className="mt-6 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setTab('jobs')}
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              tab === 'jobs'
+                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                : 'border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800'
+            }`}
+          >
+            Jobs ({filtered.length})
+          </button>
+          <button
+            onClick={() => setTab('filtered')}
+            title="Postings the auto-filter held out — restore the good ones, dismiss the rest"
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              tab === 'filtered'
+                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                : 'border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800'
+            }`}
+          >
+            Filtered for review ({pendingFiltered.length})
+          </button>
+          {tab === 'filtered' && (
+            <span className="text-sm text-neutral-500 dark:text-neutral-400">
+              Held out by the auto-filter — check the reason, restore what looks
+              good, dismiss the rest.
+            </span>
+          )}
+        </section>
+
+        {tab === 'jobs' && (
         <section className="mt-6 flex flex-wrap items-center gap-3 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
           <select
             value={status}
@@ -889,8 +1001,9 @@ export default function App() {
             {filtered.length} of {jobs.length}
           </span>
         </section>
+        )}
 
-        {selected.length > 0 && (
+        {tab === 'jobs' && selected.length > 0 && (
           <section className="mt-6 flex flex-wrap items-center gap-3 rounded-xl border border-neutral-300 bg-neutral-100 p-4 dark:border-neutral-700 dark:bg-neutral-900">
             <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
               {selected.length} selected
@@ -926,12 +1039,13 @@ export default function App() {
           </section>
         )}
 
+        {tab === 'jobs' && (
         <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               Loading jobs…
             </div>
-          ) : filtered.length === 0 ? (
+          ) : sortedJobs.length === 0 ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               No jobs match your filters.
             </div>
@@ -942,8 +1056,8 @@ export default function App() {
                   <th className="w-10 px-4 py-3 font-medium">
                     <input
                       type="checkbox"
-                      checked={filtered.length > 0 && filtered.every((job) => selected.includes(job.id))}
-                      onChange={() => toggleSelectAll(filtered)}
+                      checked={sortedJobs.length > 0 && sortedJobs.every((job) => selected.includes(job.id))}
+                      onChange={() => toggleSelectAll(sortedJobs)}
                       title={selected.length ? 'Deselect these rows' : 'Select these rows'}
                       className="accent-neutral-800"
                     />
@@ -952,12 +1066,21 @@ export default function App() {
                   <th className="px-4 py-3 font-medium">Company</th>
                   <th className="px-4 py-3 font-medium">Source</th>
                   <th className="px-4 py-3 font-medium">Posted</th>
+                  <th className="px-4 py-3 font-medium">
+                    <button
+                      onClick={cycleScrapedSort}
+                      title="Sort by time scraped (API order → newest → oldest)"
+                      className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
+                    >
+                      Scraped {scrapedDir === 'desc' ? '▼' : scrapedDir === 'asc' ? '▲' : '↕'}
+                    </button>
+                  </th>
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {filtered.map((job) => (
+                {sortedJobs.map((job) => (
                   <tr key={job.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
                     <td className="px-4 py-3">
                       <input
@@ -992,6 +1115,15 @@ export default function App() {
                     </td>
                     <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
                       {fmtDate(job.date_posted)}
+                    </td>
+                    <td
+                      className="whitespace-nowrap px-4 py-3 text-neutral-600 dark:text-neutral-400"
+                      title={job.scraped_at ? `Scraped ${timeAgo(job.scraped_at)}` : 'Scrape time unknown'}
+                    >
+                      {fmtDateTime(job.scraped_at)}
+                      <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+                        {timeAgo(job.scraped_at)}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       <select
@@ -1033,6 +1165,123 @@ export default function App() {
             </table>
           )}
         </section>
+        )}
+
+        {tab === 'filtered' && (
+        <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+          {filteredNote && (
+            <p className="border-b border-neutral-200 px-4 py-2 text-sm text-neutral-600 dark:border-neutral-800 dark:text-neutral-400" role="status">
+              {filteredNote}
+            </p>
+          )}
+          {loading ? (
+            <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+              Loading filtered postings…
+            </div>
+          ) : visibleFiltered.length === 0 ? (
+            <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+              Nothing held for review. Filtered-out postings from future scrapes
+              will appear here with the reason they were dropped.
+            </div>
+          ) : (
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Title</th>
+                  <th className="px-4 py-3 font-medium">Company</th>
+                  <th className="px-4 py-3 font-medium">Source</th>
+                  <th className="px-4 py-3 font-medium">Posted</th>
+                  <th className="px-4 py-3 font-medium">Filter reason</th>
+                  <th className="px-4 py-3 font-medium">Filtered</th>
+                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                {visibleFiltered.map((job) => (
+                  <tr key={job.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                    <td className="px-4 py-3">
+                      <a
+                        href={job.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-medium text-neutral-800 hover:text-black hover:underline dark:text-neutral-200 dark:hover:text-white"
+                      >
+                        <Highlight text={job.title || 'Untitled'} query={parsedSearch.terms} />
+                      </a>
+                      {job.search_term && (
+                        <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+                          via “{job.search_term}”
+                        </span>
+                      )}
+                      {job.description && (
+                        <details className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                          <summary className="cursor-pointer hover:underline">
+                            Posting text
+                          </summary>
+                          <p className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap">
+                            {job.description}
+                          </p>
+                        </details>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
+                      <Highlight text={job.company || '—'} query={parsedSearch.terms} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-block rounded px-2 py-0.5 text-xs font-medium capitalize ${
+                          SOURCE_STYLES[job.source] || 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
+                        }`}
+                      >
+                        {job.source || '—'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
+                      {fmtDate(job.date_posted)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className="inline-block rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900 dark:text-amber-300"
+                        title="Why the auto-filter held this posting out"
+                      >
+                        {job.filter_reason || 'filtered'}
+                      </span>
+                    </td>
+                    <td
+                      className="whitespace-nowrap px-4 py-3 text-neutral-600 dark:text-neutral-400"
+                      title={job.filtered_at ? `Filtered ${timeAgo(job.filtered_at)}` : ''}
+                    >
+                      {fmtDateTime(job.filtered_at)}
+                      <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+                        {timeAgo(job.filtered_at)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => restoreFiltered(job)}
+                          disabled={restoring === job.id}
+                          title="Move back to Jobs as NEW so you can apply"
+                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                        >
+                          {restoring === job.id ? 'Restoring…' : 'Restore'}
+                        </button>
+                        <button
+                          onClick={() => deleteFiltered(job)}
+                          title="Dismiss — it was filtered correctly"
+                          className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+        )}
       </main>
 
       {tailorJob && (

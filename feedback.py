@@ -33,7 +33,7 @@ import re
 import threading
 import time
 from collections import Counter
-from datetime import date
+from datetime import date, datetime
 
 GOOD = ("APPLIED", "REVIEWED")
 # All negative dashboard decisions. SKIP is generic, MISMATCH means wrong
@@ -248,14 +248,69 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
     return patterns
 
 
+def _cell(value) -> str:
+    """Stringify a scraped DataFrame cell; NaN/NaT/None become ''."""
+    if value is None:
+        return ""
+    try:
+        import pandas as pd
+        if value is pd.NaT or pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, float):
+        import math
+        if math.isnan(value):
+            return ""
+    return str(value).strip()
+
+
+def _norm_date(value):
+    """Normalize a scraped date_posted cell to date/datetime/None (NaT-safe)."""
+    if value is None:
+        return None
+    try:
+        import pandas as pd
+        if value is pd.NaT or pd.isna(value):
+            return None
+        if isinstance(value, pd.Timestamp):
+            value = value.to_pydatetime()
+    except Exception:
+        pass
+    if isinstance(value, (datetime, date)):
+        return value
+    s = str(value).strip()
+    return s or None
+
+
+def _dropped_row(row, reason: str) -> dict:
+    """Serialize one filtered-out posting for review persistence.
+
+    `row` is a pandas Series from the scraped batch; keys are defensive
+    because JobSpy and JobStreet frames don't share every column.
+    """
+    return {
+        "title": _cell(row.get("title")),
+        "company": _cell(row.get("company")),
+        "location": _cell(row.get("location")),
+        "job_url": _cell(row.get("job_url")),
+        "site": _cell(row.get("site")),
+        "description": _cell(row.get("description")),
+        "date_posted": _norm_date(row.get("date_posted")),
+        "matched_search_term": _cell(row.get("matched_search_term")),
+        "filter_reason": reason or "",
+    }
+
+
 def apply_heuristic(df, patterns: dict):
     """Drop rows matching learned keywords/phrases/companies/locations.
-    Returns (df, n, reasons)."""
+    Returns (kept_df, n_dropped, reasons, dropped_df) where dropped_df
+    carries a per-row `filter_reason` column for review persistence."""
     if df is None or getattr(df, "empty", True):
-        return df, 0, []
+        return df, 0, [], df.head(0) if df is not None else df
     if not patterns["keywords"] and not patterns.get("phrases") \
             and not patterns["companies"] and not patterns.get("locations"):
-        return df, 0, []
+        return df, 0, [], df.head(0)
     kw = set(patterns["keywords"])
     phrs = set(patterns.get("phrases", []))
     comps = set(patterns["companies"])
@@ -280,7 +335,10 @@ def apply_heuristic(df, patterns: dict):
 
     reasons = df.apply(bad_row, axis=1)
     mask = reasons.notna()
-    return df[~mask].reset_index(drop=True), int(mask.sum()), reasons[mask].tolist()
+    dropped = df[mask].copy()
+    dropped["filter_reason"] = reasons[mask].values
+    return (df[~mask].reset_index(drop=True), int(mask.sum()),
+            reasons[mask].tolist(), dropped.reset_index(drop=True))
 
 
 # ---------------------------------------------------------------- AI layer
@@ -523,19 +581,19 @@ def _build_scoring_prompt(decisions: list[dict], batch_titles: list[dict],
 def ai_filter(df, decisions: list[dict], fc: dict, keys: dict):
     """Ask an LLM which new postings match your reject patterns.
 
-    Returns (df, n_dropped, provider_name). Never raises.
+    Returns (kept_df, n_dropped, provider_name, dropped_df). Never raises.
     """
     if df is None or getattr(df, "empty", True):
-        return df, 0, ""
+        return df, 0, "", df.head(0) if df is not None else df
     provider = _pick_provider(fc, keys)
     if provider is None:
-        return df, 0, ""
+        return df, 0, "", df.head(0)
     name, key, url, model = provider
 
     good = [d for d in decisions if d.get("status") in GOOD][:fc["max_examples_per_side"]]
     bad = [d for d in decisions if d.get("status") in BAD][:fc["max_examples_per_side"]]
     if not bad:
-        return df, 0, ""
+        return df, 0, "", df.head(0)
 
     batch = df.head(fc["max_jobs_per_ai_call"])
     system, user = _build_scoring_prompt(
@@ -545,7 +603,7 @@ def ai_filter(df, decisions: list[dict], fc: dict, keys: dict):
     ok, reason = _budget_allows(fc, est_in)
     if not ok:
         print(f"[feedback] AI scoring skipped ({reason}); heuristic-only.")
-        return df, 0, ""
+        return df, 0, "", df.head(0)
     print(f"[feedback] AI scoring ({name}/{model}): ~{est_in} in-tokens, "
           f"{len(batch)} postings.")
     _LIMITER.wait(float(fc["min_seconds_between_calls"] or 0))
@@ -557,20 +615,22 @@ def ai_filter(df, decisions: list[dict], fc: dict, keys: dict):
         verdicts = _parse_ai_decisions(reply, len(batch))
     except Exception as e:
         print(f"[feedback] AI filter ({name}) failed, heuristic-only: {e}")
-        return df, 0, ""
+        return df, 0, "", df.head(0)
     spent = used if used else est_in + estimate_tokens(reply)
     calls, toks = _record_usage(fc, spent)
     if calls:
         print(f"[feedback] AI usage today: {calls} calls, {toks} tokens.")
     if not verdicts:
         print(f"[feedback] AI filter ({name}) returned no usable verdicts.")
-        return df, 0, ""
+        return df, 0, "", df.head(0)
 
     drop_idx = [batch.index[i] for i, v in verdicts.items() if v == "SKIP"]
+    dropped = df.loc[drop_idx].copy()
+    dropped["filter_reason"] = f"ai:{name}"
     kept = df.drop(index=drop_idx).reset_index(drop=True)
     print(f"[feedback] AI ({name}/{model}) skipped {len(drop_idx)} of {len(batch)} "
           f"new postings based on past negative decisions.")
-    return kept, len(drop_idx), name
+    return kept, len(drop_idx), name, dropped.reset_index(drop=True)
 
 
 def generate_text(system: str, user: str, cfg: dict,
@@ -655,7 +715,8 @@ def apply_feedback(df, cfg: dict, report: dict | None = None):
     Runs heuristic always, AI when keys allow. Never raises -- on any
     problem the input frame is returned unchanged. When `report` (a dict)
     is given, it is filled with heuristic_dropped / heuristic_reasons /
-    ai_dropped / ai_provider so callers can show WHY rows were dropped.
+    ai_dropped / ai_provider plus `dropped_rows` (one dict per filtered
+    posting with its filter_reason) so callers can persist them for review.
     """
     fc = _cfg(cfg)
     if not fc["enabled"] or df is None or getattr(df, "empty", True):
@@ -680,9 +741,12 @@ def apply_feedback(df, cfg: dict, report: dict | None = None):
               f"keywords={patterns['keywords']} phrases={patterns.get('phrases', [])} "
               f"companies={patterns['companies']} "
               f"locations={patterns.get('locations', [])}")
-    df, n_heur, heur_reasons = apply_heuristic(df, patterns)
+    df, n_heur, heur_reasons, dropped_heur = apply_heuristic(df, patterns)
     if n_heur:
         print(f"[feedback] heuristic dropped {n_heur} postings matching reject patterns.")
+    dropped_frames = []
+    if dropped_heur is not None and not dropped_heur.empty:
+        dropped_frames.append(dropped_heur)
     if report is not None:
         report["heuristic_dropped"] = n_heur
         report["heuristic_reasons"] = heur_reasons
@@ -695,10 +759,18 @@ def apply_feedback(df, cfg: dict, report: dict | None = None):
         except Exception:
             keys = {}
         if keys:
-            df, n_ai, ai_name = ai_filter(df, decisions, fc, keys)
+            df, n_ai, ai_name, dropped_ai = ai_filter(df, decisions, fc, keys)
+            if dropped_ai is not None and not dropped_ai.empty:
+                dropped_frames.append(dropped_ai)
             if report is not None:
                 report["ai_dropped"] = n_ai
                 report["ai_provider"] = ai_name
         else:
             print("[feedback] no AI API keys in .env; heuristic-only.")
+    if report is not None:
+        rows: list[dict] = []
+        for frame in dropped_frames:
+            for _, r in frame.iterrows():
+                rows.append(_dropped_row(r, r.get("filter_reason", "")))
+        report["dropped_rows"] = rows
     return df

@@ -32,3 +32,24 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
   new_jobs_count INT,
   summary TEXT
 );
+
+-- Postings the feedback filter held out of `jobs`, for review in the
+-- dashboard's Filtered tab. Restoring moves a row into `jobs` as NEW
+-- (filtered row kept with restored=TRUE as an audit trail).
+CREATE TABLE IF NOT EXISTS filtered_jobs (
+  id SERIAL PRIMARY KEY,
+  source TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  company TEXT NOT NULL DEFAULT '',
+  url TEXT NOT NULL DEFAULT '',
+  location TEXT,
+  date_posted DATE,
+  description TEXT,
+  search_term TEXT,
+  filter_reason TEXT NOT NULL DEFAULT '',
+  filtered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  restored BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE UNIQUE INDEX IF NOT EXISTS filtered_jobs_url_idx
+  ON filtered_jobs (url) WHERE url <> '';
+CREATE INDEX IF NOT EXISTS filtered_jobs_restored_idx ON filtered_jobs (restored);

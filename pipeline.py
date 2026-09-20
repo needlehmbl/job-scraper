@@ -88,14 +88,16 @@ def _xrow(job) -> dict:
 def run_scrape(legacy_xlsx: bool = False) -> dict:
     """Run one full scrape and return a summary dict.
 
-    Returns {"added", "scraped", "summary", "filtered", "filter_reasons"}.
-    Raises on fatal errors (DB connection failure, ...); an empty result
-    (no jobs found) is NOT an error -- it returns added=0, scraped=0.
+    Returns {"added", "scraped", "summary", "filtered", "filter_reasons",
+    "filtered_saved"}. Raises on fatal errors (DB connection failure, ...);
+    an empty result (no jobs found) is NOT an error -- it returns added=0,
+    scraped=0.
     """
     started = datetime.now(timezone.utc)
     cfg = load_config()
     try:
         db.ensure_tracking_schema()
+        db.ensure_filtered_schema()
     except Exception as e:
         print(f"[pipeline] WARNING: tracking migration failed: {e}")
     jobs = scrape(cfg)
@@ -110,10 +112,20 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
     filtered = heur_dropped + ai_dropped
     if filtered:
         print(f"[pipeline] feedback filtered {filtered}: {top_reasons}")
+    # Hold dropped postings for review even when nothing survived -- the
+    # dashboard's Filtered tab reads this table.
+    filtered_saved = 0
+    try:
+        filtered_saved = db.save_filtered_jobs(list(fb.get("dropped_rows") or []))
+        if filtered_saved:
+            print(f"[pipeline] held {filtered_saved} filtered postings for review")
+    except Exception as e:
+        print(f"[pipeline] WARNING: could not save filtered postings: {e}")
     if jobs.empty:
         print("[pipeline] nothing found -- check config.yaml search terms/location.")
         return {"added": 0, "scraped": 0, "summary": "no jobs found",
-                "filtered": filtered, "filter_reasons": top_reasons}
+                "filtered": filtered, "filter_reasons": top_reasons,
+                "filtered_saved": filtered_saved}
 
     sheet_path = cfg["paths"]["tracker_sheet"]
     df = tracker.load_or_init(sheet_path) if legacy_xlsx else None
@@ -148,4 +160,5 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         f.write(summary + "\n")
 
     return {"added": added, "scraped": len(jobs), "summary": summary,
-            "filtered": filtered, "filter_reasons": top_reasons}
+            "filtered": filtered, "filter_reasons": top_reasons,
+            "filtered_saved": filtered_saved}

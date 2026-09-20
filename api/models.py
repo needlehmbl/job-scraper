@@ -27,5 +27,24 @@ class JobStatusUpdate(BaseModel):
     status: str = Field(pattern=r"^(NEW|REVIEWED|APPLIED|SKIP|REJECTED|MISMATCH|EXP_GAP|EXPIRED)$")
 
 
+class FilteredJob(BaseModel):
+    """A posting the feedback filter held out of `jobs`, awaiting review."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    source: str = ""
+    title: str = ""
+    company: str = ""
+    url: str = ""
+    location: str | None = None
+    date_posted: date | None = None
+    description: str | None = None
+    search_term: str | None = None
+    filter_reason: str = ""
+    filtered_at: datetime | None = None
+    restored: bool = False
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
