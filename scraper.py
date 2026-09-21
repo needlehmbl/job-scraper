@@ -3,7 +3,9 @@ Scrapes job postings across configured sites/terms using python-jobspy,
 applies keyword + experience filters, and returns a deduplicated DataFrame.
 
 JobStreet is not supported by jobspy, so it is handled separately by
-jobstreet.py (headless Chromium); direct company boards (Greenhouse/Lever
+jobstreet.py (headless Chromium); Glassdoor's jobspy integration is
+bot-walled, so glassdoor.py renders its search pages the same way;
+direct company boards (Greenhouse/Lever
 JSON APIs) are handled by greenhouse.py / lever.py. This module merges all
 frames in.
 """
@@ -13,6 +15,7 @@ import yaml
 import pandas as pd
 from jobspy import scrape_jobs
 
+import glassdoor
 import greenhouse
 import jobstreet
 import lever
@@ -134,25 +137,13 @@ def scrape(cfg: dict) -> pd.DataFrame:
         if error and error not in e["errors"]:
             e["errors"].append(error[:160])
 
-    # jobspy only knows its own providers; JobStreet is scraped by jobstreet.py.
+    # jobspy only knows its own providers; JobStreet and Glassdoor are
+    # scraped by jobstreet.py / glassdoor.py (headless Chromium).
     sites = s.get("site_names", ["indeed", "linkedin"])
-    jobspy_sites = [x for x in sites if x != "jobstreet"]
+    jobspy_sites = [x for x in sites if x not in ("jobstreet", "glassdoor")]
     use_jobstreet = "jobstreet" in sites
+    use_glassdoor = "glassdoor" in sites
     terms = s["search_terms"]
-
-    # Glassdoor is unwired on purpose (verified 2026-09-21, jobspy 1.1.82):
-    # its Country enum has no Philippines domain (hard exception), and even
-    # bypassed via the global www.glassdoor.com domain every location lookup
-    # -- PH and US alike -- hits Glassdoor's bot-wall (403 "Security" page
-    # on findPopularLocationAjax.htm, "location not parsed" downstream).
-    # Beating that needs residential proxies/CAPTCHA solving: out of scope
-    # for a local tool. Kept in site_names as intent; skipped once per run
-    # (not per term) so the log stays readable. Glassdoor-listed roles from
-    # employers with direct APIs still arrive via company_boards.
-    if "glassdoor" in jobspy_sites:
-        print("[scraper] glassdoor: skipped for this run (bot-wall, see comment). "
-              "Direct-board employers are still covered via company_boards.")
-        jobspy_sites = [x for x in jobspy_sites if x != "glassdoor"]
 
     for term in terms:
         if not jobspy_sites:
@@ -221,6 +212,34 @@ def scrape(cfg: dict) -> pd.DataFrame:
             note("jobstreet", rows=len(js_df))
         elif js_df is not None:
             note("jobstreet")
+
+    # Glassdoor via headless Chromium (glassdoor.py): jobspy's Glassdoor
+    # integration is bot-walled (see module docstring). Locations come from
+    # top-level `glassdoor_locations:` as {slug, id} pairs -- the ID is NOT
+    # resolvable programmatically (the autocomplete endpoint is the walled
+    # one), so copy the IC number out of any browser Glassdoor search URL
+    # for each city you want.
+    if use_glassdoor:
+        try:
+            g_df, g_stats = glassdoor.scrape_glassdoor(
+                terms,
+                (cfg.get("glassdoor_locations")
+                 or [{"slug": "Makati City", "id": 4778930}]),
+                max_results=s.get("results_wanted", 50),
+            )
+        except Exception as e:
+            print(f"[scraper] WARNING: glassdoor scrape failed: {e}")
+            if "Executable doesn't exist" in str(e):
+                print("[scraper] HINT: Playwright's browser build is missing -- run "
+                      "'venv/bin/python -m playwright install chromium' to fix.")
+            note("glassdoor", error=str(e))
+            g_df, g_stats = None, {}
+        if g_df is not None and not g_df.empty:
+            all_frames.append(g_df)
+        for label, n in (g_stats or {}).items():
+            note("glassdoor", rows=n)
+        if g_df is not None and g_df.empty and not g_stats:
+            note("glassdoor")
 
     # Direct company boards (Greenhouse/Lever JSON APIs, no browser needed).
     # Slugs live in top-level `company_boards:` (list or {slug: name});

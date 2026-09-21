@@ -44,14 +44,14 @@ search:
   # exact spelling; see https://github.com/speedyapply/JobSpy for the list.
   country_indeed: "Philippines"
 
-  # JobSpy boards (indeed/linkedin/glassdoor/google) + custom JobStreet
-  # scraper. ZipRecruiter is US/CA-only; bayt/naukri/bdjobs are
-  # Middle East/India/Bangladesh-focused -- all skipped for a
-  # Metro Manila search. Glassdoor is unwired on purpose (verified
-  # 2026-09-21: no PH domain in jobspy + global bot-wall on its location
-  # API -- needs residential proxies, out of scope); scraper.py logs one
-  # skip line per run. Google Jobs currently returns zero rows upstream
-  # (JobSpy parser broken) -- the scrape warnings flag it if so.
+  # JobSpy boards (indeed/linkedin/google) + custom JobStreet and
+  # Glassdoor scrapers (headless Chromium). ZipRecruiter is US/CA-only;
+  # bayt/naukri/bdjobs are Middle East/India/Bangladesh-focused -- all
+  # skipped for a Metro Manila search. Glassdoor's jobspy integration is
+  # bot-walled (verified 2026-09-21), so `glassdoor` here routes to
+  # glassdoor.py instead -- keep it listed. Google Jobs currently returns
+  # zero rows upstream (JobSpy parser broken) -- the scrape warnings flag
+  # it if so.
   site_names:
     - "indeed"
     - "linkedin"
@@ -209,6 +209,17 @@ company_boards:
     # - "cteph"           # remote-PH incl. DevOps roles
   lever:
     - "coins"             # Coins.ph, Taguig
+
+# Glassdoor search locations as {slug, id} pairs (glassdoor.py, headless
+# Chromium -- jobspy's Glassdoor integration is bot-walled). The numeric
+# ID is NOT resolvable programmatically (the autocomplete endpoint is the
+# walled one) -- copy the IC number out of any browser Glassdoor search
+# URL for each city you want (e.g. ..._IC4778930_... in the URL). One
+# results page (30 cards) is read per term per location, with a cooldown
+# between loads; cards carry no usable age, so these skip the hours_old
+# gate like company boards.
+glassdoor_locations:
+  - {slug: "Makati City", id: 4778930}   # verified live 2026-09-21
 
 # Local output file -- one row per NEW job, appended across runs.
 # Existing rows are preserved; re-scraped jobs are skipped as duplicates.

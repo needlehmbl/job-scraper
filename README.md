@@ -1,7 +1,8 @@
 # Job Search Scraper + Dashboard
 
 Scrape pipeline + local web dashboard: scrapes Indeed, LinkedIn
-(via JobSpy) and JobStreet (via Playwright/Chromium), plus Greenhouse/Lever
+(via JobSpy), JobStreet and Glassdoor (via Playwright/Chromium), plus
+Greenhouse/Lever
 company boards (public JSON APIs), for
 junior/entry-level roles in Metro Manila, applies keyword +
 years-of-experience filters, dedupes, and stores new leads in **Postgres**.
@@ -30,6 +31,7 @@ to postings from a browser tab.
 venv/bin/python main.py          scrape -> Postgres (jobs, scrape_runs)
 pipeline.py                     shared scrape pipeline (CLI + API button use the same code)
 greenhouse.py / lever.py          direct company-board scrapers (public JSON APIs, no browser) — slugs in `company_boards`
+jobstreet.py / glassdoor.py       Playwright/Chromium scrapers (no jobspy provider / bot-walled API) — locations in `search.location` / `glassdoor_locations`
 filtered_jobs (Postgres)          postings the auto-filter held out, with per-row reason — reviewed in the dashboard's Filtered tab
 api/routes/filtered.py            GET /filtered, POST /filtered/{id}/restore, DELETE /filtered/{id}
 job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
@@ -377,7 +379,7 @@ limited to localhost origins.
 
 Two jobspy quirks cause most 400s:
 
-1. **`country_indeed` is required for Indeed/Glassdoor and defaults to
+1. **`country_indeed` is required for Indeed and defaults to
    `'USA'`.** If you're searching a non-US location and this isn't set in
    `config.yaml`'s `search.country_indeed`, Indeed will 400 (or silently
    search the wrong country). Must match jobspy's exact spelling.
@@ -399,14 +401,14 @@ sites change something.
 
 ## Job boards
 
-Current default (`config.yaml` → `search.site_names`): `indeed`, `linkedin`,
-`glassdoor`, `google` (JobSpy), plus `jobstreet` (custom Playwright scraper
-in `jobstreet.py`, since JobSpy has no JobStreet provider).
+Current default (`config.yaml` → `search.site_names`): `indeed`,
+`linkedin`, `google` (JobSpy), plus `jobstreet` and `glassdoor` (custom
+Playwright scrapers in `jobstreet.py` / `glassdoor.py`, since JobSpy has
+no JobStreet provider and its Glassdoor integration is bot-walled).
 
 Adding/removing boards is a one-line config change. `scraper.py` runs one
 JobSpy call **per site per term**, so a single failing board can't poison
-the others (this used to be one combined call — Glassdoor's Philippines
-error nuked Indeed/LinkedIn results for every term). It builds a per-term
+the others. It builds a per-term
 `google_search_term` when `google` is enabled, since Google Jobs filters
 only via that parameter. JobSpy supports `linkedin`, `indeed`,
 `glassdoor`, `google`, `zip_recruiter`, `bayt`, `naukri`, `bdjobs`.
@@ -414,13 +416,15 @@ only via that parameter. JobSpy supports `linkedin`, `indeed`,
 Coverage notes for a Metro Manila search (verified live 2026-09-21,
 jobspy 1.1.82):
 
-- `glassdoor`: **unwired on purpose, not a bug.** jobspy's country table
-  has no Philippines Glassdoor domain (hard exception), and bypassing via
-  the global domain still fails — every location lookup, US included,
-  hits Glassdoor's bot-wall (403 "Security" page). Fixing that needs
-  residential proxies/CAPTCHA solving, out of scope here. The scraper
-  logs one skip line per run; Glassdoor-listed employers with direct
-  APIs still arrive via `company_boards`.
+- `glassdoor`: covered by a dedicated Playwright scraper
+  (`glassdoor.py`), since jobspy's Glassdoor integration is bot-walled
+  (no PH domain + 403 on its location API, verified 2026-09-21). Passive
+  result-page loads from a home IP pass; the module never touches the
+  search form (that triggers a challenge) and resolves locations via
+  numeric IDs in `glassdoor_locations` (copy the IC number from any
+  browser search URL). One page (30 cards) per term per location with a
+  cooldown between loads; cards carry no usable age so these skip the
+  `hours_old` gate like company boards, and all other filters apply.
 - `google`: global aggregator, sometimes finds PH SMBs Indeed misses, but
   currently returns **zero rows** (JobSpy's Google parser appears
   broken upstream — the per-source warnings added to the scrape note
