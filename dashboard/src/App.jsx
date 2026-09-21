@@ -34,8 +34,8 @@ const STAGE_LABELS = {
   FINAL: 'Final',
   OFFER: 'Offer',
   ACCEPTED: 'Accepted',
-  DECLINED: 'Declined',
-  OUT: 'Out',
+  DECLINED: 'Declined (you said no)',
+  OUT: 'Out (they said no)',
 }
 
 const STAGE_STYLES = {
