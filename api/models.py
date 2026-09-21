@@ -3,7 +3,7 @@ from datetime import date, datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field
 
-STATUSES = {"NEW", "REVIEWED", "APPLIED", "SKIP", "REJECTED",
+STATUSES = {"NEW", "REVIEWED", "APPLIED", "SKIP",
             "MISMATCH", "EXP_GAP", "EXPIRED", "DUPLICATE"}
 
 # Hiring-funnel stages for APPLIED rows (tracked in the dashboard's
@@ -14,7 +14,7 @@ STAGES = {"APPLIED", "INITIAL", "TECHNICAL", "FINAL",
 INTERVIEW_STAGES = {"INITIAL", "TECHNICAL", "FINAL", "OUT"}
 OFFER_STAGES = {"OFFER", "ACCEPTED", "DECLINED"}
 
-_STATUS_PATTERN = (r"^(NEW|REVIEWED|APPLIED|SKIP|REJECTED|MISMATCH|EXP_GAP"
+_STATUS_PATTERN = (r"^(NEW|REVIEWED|APPLIED|SKIP|MISMATCH|EXP_GAP"
                    r"|EXPIRED|DUPLICATE)$")
 _STAGE_PATTERN = (r"^(APPLIED|INITIAL|TECHNICAL|FINAL"
                   r"|OFFER|ACCEPTED|DECLINED|OUT)$")

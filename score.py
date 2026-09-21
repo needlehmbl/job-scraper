@@ -12,7 +12,7 @@ Score is 0-100, computed from data the scrape already has
   -25 company in learned-bad list, -10 per learned-bad title token (cap -20)
 
 Learned-bad lists come from feedback.learn_patterns() (your dashboard
-REJECTED/SKIP/MISMATCH/EXP_GAP decisions). Survivors of the feedback
+SKIP/MISMATCH/EXP_GAP decisions). Survivors of the feedback
 filter rarely hit them -- the penalty mainly orders borderline rows.
 
 Bank source: default resume in resumes/library.json, falling back to

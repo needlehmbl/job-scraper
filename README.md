@@ -17,7 +17,7 @@ to postings from a browser tab.
   **Apply** button per row that opens the posting as a new tab in your
   existing browser.
 - Checkbox column + bulk bar for setting one status on many rows at once.
-- The scraper learns from your decisions (`REJECTED` / `SKIP` / `MISMATCH` /
+- The scraper learns from your decisions (`SKIP` / `MISMATCH` /
   `EXP_GAP` vs `APPLIED` / `REVIEWED`) and drops lookalikes next run.
 - A **Resumes** library (drag-drop `.docx`) plus a per-row **Tailor** button:
   previews a posting-tailored resume (skill add/drop suggestions included)
@@ -167,13 +167,15 @@ auto-filter, e.g. `+12 new (300 checked, 24 auto-filtered
 (location:cebu×8, title-keyword:senior×5), 24 held for review in the Filtered tab)` —
 the top drop reasons from the feedback learner (see below).
 
-- **Status** badge is a dropdown — set `REVIEWED` / `APPLIED` / `SKIP` /
-  `REJECTED` / `MISMATCH` / `EXP_GAP` / `EXPIRED` / `DUPLICATE` directly (`MISMATCH` = wrong role or
+- **Status** badge is a dropdown — set `REVIEWED` / `SKIP` /
+  `MISMATCH` / `EXP_GAP` / `EXPIRED` / `DUPLICATE` directly (`MISMATCH` = wrong role or
   fit, `EXP_GAP` = needs more experience than you have, `EXPIRED` = dead
-  link, `DUPLICATE` = repeat posting of a row you're already tracking — see below). Moving to `APPLIED`
-  from it clears `applied_at` so the chart stays accurate. Every change is
+  link, `DUPLICATE` = repeat posting of a row you're already tracking — see below). `APPLIED`
+  is reachable only through the post-Apply confirm strip (below), and employer
+  cuts are tracked as the `OUT` stage in the Applications tab — there is no
+  `REJECTED` status anymore. Every change is
   also recorded in `job_status_history` with a timestamp, which powers the
-   applied-vs-rejected-vs-skipped-vs-mismatch-vs-expgap graph and the scraper's feedback learner.
+  outcome graph and the scraper's feedback learner.
 - **Apply** button opens the job URL in a new tab of your existing browser
   (`window.open`) and persists the row as `REVIEWED` (so the change survives
   a tab reload). A confirm strip then appears under the row: **Yes,
@@ -194,11 +196,12 @@ the top drop reasons from the feedback learner (see below).
   benefits / pros / cons notes for comparing offers.   `↩ Move back to
   Jobs` sends a row back to triage as `REVIEWED`. Triage `status` and
   pipeline `stage` are separate axes — the Jobs status dropdown stays at 7
-  values (`APPLIED` is reachable only through the post-Apply confirm, and
-  `REJECTED` only through the **Mark rejected** button in application
-  Details, so `REJECTED` always means a real application failed), and stages
-  never train the feedback learner (interview outcomes
-  say how the process went, not whether the role was relevant).
+  values (`APPLIED` is reachable only through the post-Apply confirm), and
+  stages never train the feedback learner, with one refinement: `APPLIED`
+  rows sitting at the `OUT` stage are excluded from the GOOD side too, so
+  a cut never teaches the filter that the role type is desirable
+  (interview outcomes say how the process went, not whether the role was
+  relevant).
 - **Theme:** neutral black/gray chrome in light mode, full dark mode via
   the sun/moon button in the header (follows your OS preference on first
   visit, remembered after). Status pills, source badges, and graph lines
@@ -209,7 +212,7 @@ the top drop reasons from the feedback learner (see below).
   space-separated words must ALL match, and `title:` / `company:`
   restrict the whole query (e.g. `title:python backend, jr | junior`).
   First matching term is highlighted in the table.
-- **Negative filter-out tags:** the `✕ SKIP (n)` / `✕ REJECTED (n)` /
+- **Negative filter-out tags:** the `✕ SKIP (n)` /
   `✕ MISMATCH (n)` / `✕ EXP_GAP (n)` / `✕ EXPIRED (n)` / `✕ DUPLICATE (n)` pills
   next to the status dropdown hide those postings from the table (counts
   shown). Picking an explicit status in the dropdown overrides them.
@@ -293,16 +296,18 @@ file upload is attempted.
 
 ## Feedback learner (scraper learns from your decisions)
 
-Marking postings `REJECTED` / `SKIP` / `MISMATCH` / `EXP_GAP`
+Marking postings `SKIP` / `MISMATCH` / `EXP_GAP`
 (vs `APPLIED` / `REVIEWED`) teaches the
 next scrape what to drop, via `feedback.py` (see `config.yaml` → `feedback:`).
-`NEW`, `EXPIRED` and `DUPLICATE` never train the learner.
+`NEW`, `EXPIRED` and `DUPLICATE` never train the learner, and neither do
+`APPLIED` rows sitting at the `OUT` funnel stage (a cut says how the
+process went, not whether the role was relevant).
 
 - **Heuristic (no API needed):** once you have `min_samples` decided jobs
   (default 10), title tokens, two-word phrases, and companies you
-  overwhelmingly reject (e.g. `salesforce`, `power platform`, a staffing
-  firm you always skip) are auto-excluded from new scrapes. `SKIP` counts
-  exactly like `REJECTED` — a skip means "not relevant" — and so do the
+  overwhelmingly reject (e.g. a staffing
+  firm you always skip) are auto-excluded from new scrapes. `SKIP` means
+  "not relevant" — and so do the
   finer-grained `MISMATCH` (wrong fit) and `EXP_GAP` (needs more
   experience). You don't have to be explicit beyond the status: every
   scraped posting's description is stored, and canonical stack skills

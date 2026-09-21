@@ -1,11 +1,11 @@
 """
 Feedback learner: the scraper learns from your dashboard decisions.
 
-Every time you mark a posting REJECTED / SKIP / MISMATCH / EXP_GAP
+Every time you mark a posting SKIP / MISMATCH / EXP_GAP
 (vs APPLIED / REVIEWED) in the
 dashboard, that decision is stored in Postgres (`jobs.status` +
 `job_status_history`). On the next scrape, this module reads those decisions
-back and filters out new postings that look like the ones you rejected.
+back and filters out new postings that look like the ones you skipped.
 
 Statuses outside GOOD/BAD -- NEW (undecided), EXPIRED (dead link, not
 a relevance judgment) and DUPLICATE (repeat posting, not a relevance
@@ -14,7 +14,9 @@ expired posting as EXPIRED (or a repeat as DUPLICATE) can never teach
 the filter to ban its title. Pipeline progress lives in a separate
 `stage` column (INITIAL / TECHNICAL / …), not in `status`, so it never
 touches learning either: outcomes say how the process went, not whether
-the role was relevant.
+the role was relevant. One refinement: APPLIED rows sitting at the OUT
+stage (employer said no) are excluded from the GOOD side too -- a cut
+must not teach the filter that the role type is desirable.
 
 Two layers, cheapest first:
 
@@ -46,9 +48,11 @@ from collections import Counter
 from datetime import date, datetime
 
 GOOD = ("APPLIED", "REVIEWED")
-# All negative dashboard decisions. SKIP is generic, MISMATCH means wrong
+# All negative triage decisions. SKIP is generic, MISMATCH means wrong
 # role/field/city fit, EXP_GAP means the posting needs more experience
-# than you have -- all three count exactly like REJECTED for learning.
+# than you have. "REJECTED" stays in BAD only for legacy rows predating
+# the funnel; nothing in the dashboard can set it anymore (employer cuts
+# are the OUT stage, excluded from learning entirely -- load_decisions).
 BAD = ("REJECTED", "SKIP", "MISMATCH", "EXP_GAP")
 
 _TOKEN_PAT = re.compile(r"[a-z0-9+#.]+")
@@ -61,8 +65,8 @@ _STOPWORDS = frozenset({
 _DEFAULTS = {
     "enabled": True,
     "min_samples": 10,       # decided jobs needed before learning kicks in
-    # SKIP and REJECTED count equally as "bad" everywhere below: a skip
-    # means "not relevant to my job search", same weight as a rejection.
+    # SKIP, MISMATCH and EXP_GAP count equally as "bad" everywhere below:
+    # a skip means "not relevant to my job search".
     # MISMATCH (wrong fit) and EXP_GAP (needs more experience) are also
     # bad -- finer-grained reasons, same learning weight.
     "min_hits": 2,           # token must appear in this many decided jobs
@@ -154,7 +158,10 @@ def load_decisions(conn=None) -> list[dict]:
     """Fetch decided jobs (title/company/location/description/status).
 
     `description` is NULL for rows stored before it was added -- those
-    rows still teach via title/company/location.
+    rows still teach via title/company/location. Rows at the OUT funnel
+    stage (employer said no) are excluded either way: a cut says how the
+    process went, not whether the role was relevant, so it must neither
+    count as GOOD (via APPLIED) nor as BAD.
     """
     import db
 
@@ -167,6 +174,7 @@ def load_decisions(conn=None) -> list[dict]:
                 """
                 SELECT title, company, location, description, status FROM jobs
                 WHERE status = ANY(%s)
+                  AND (stage IS NULL OR stage <> 'OUT')
                 ORDER BY id DESC LIMIT 2000
                 """,
                 (list(GOOD + BAD),),

@@ -134,19 +134,20 @@ search:
   exclude_company_keywords: []
 
 # Feedback learner: the scraper learns from your dashboard decisions
-# (REJECTED/SKIP/MISMATCH/EXP_GAP vs APPLIED/REVIEWED) and drops new postings
-# like the ones you rejected. Heuristic layer always runs once you have
+# (SKIP/MISMATCH/EXP_GAP vs APPLIED/REVIEWED) and drops new postings
+# like the ones you skipped. Heuristic layer always runs once you have
 # min_samples decided jobs; the AI layer additionally asks an LLM when
 # an API key is present in .env (GROQ > OpenRouter > Mistral > Gemini).
 feedback:
   enabled: true
   # Decided jobs needed before learning kicks in (dashboard statuses
-  # APPLIED/REVIEWED count as good, REJECTED/SKIP/MISMATCH/EXP_GAP as bad).
+  # APPLIED/REVIEWED count as good, SKIP/MISMATCH/EXP_GAP as bad;
+  # APPLIED rows at the OUT funnel stage are excluded either way).
   # MISMATCH = wrong role/field/city fit, EXP_GAP = needs more experience.
   min_samples: 10
   # A title token is auto-excluded once it appears in >= min_hits
-  # decided jobs with >= min_reject_rate of them rejected/skipped.
-  # SKIP counts exactly like REJECTED here -- a skip means "not relevant".
+  # decided jobs with >= min_reject_rate of them skipped.
+  # SKIP, MISMATCH and EXP_GAP all count as "bad" everywhere below.
   # MISMATCH and EXP_GAP are finer-grained negative reasons, same weight.
   min_hits: 2
   min_reject_rate: 0.8

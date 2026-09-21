@@ -15,8 +15,8 @@ const API = 'http://127.0.0.1:8000'
 
 const STATUSES = ['NEW', 'REVIEWED', 'SKIP', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
 // Full triage list for the filter dropdown (APPLIED rows live in the
-// Applications tab; REJECTED is set only from there).
-const ALL_STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
+// Applications tab; employer cuts are tracked as the OUT stage there).
+const ALL_STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
 // "No, I didn't apply" reasons offered in the post-Apply confirm strip.
 const NO_APPLY_REASONS = ['SKIP', 'EXP_GAP', 'MISMATCH', 'EXPIRED']
 const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google', 'greenhouse', 'lever']
@@ -54,7 +54,6 @@ const STATUS_STYLES = {
   REVIEWED: 'bg-amber-100 text-amber-700 ring-amber-200 dark:bg-amber-900 dark:text-amber-300 dark:ring-amber-800',
   APPLIED: 'bg-emerald-100 text-emerald-700 ring-emerald-200 dark:bg-emerald-900 dark:text-emerald-300 dark:ring-emerald-800',
   SKIP: 'bg-neutral-200 text-neutral-600 ring-neutral-300 dark:bg-neutral-700 dark:text-neutral-300 dark:ring-neutral-600',
-  REJECTED: 'bg-rose-100 text-rose-700 ring-rose-200 dark:bg-rose-900 dark:text-rose-300 dark:ring-rose-800',
   MISMATCH: 'bg-orange-100 text-orange-700 ring-orange-200 dark:bg-orange-900 dark:text-orange-300 dark:ring-orange-800',
   EXP_GAP: 'bg-violet-100 text-violet-700 ring-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:ring-violet-800',
   EXPIRED: 'bg-neutral-400 text-white ring-neutral-400 dark:bg-neutral-600 dark:text-neutral-200 dark:ring-neutral-600',
@@ -64,13 +63,12 @@ const STATUS_STYLES = {
 // Negative-status hide pills: active (hiding) color per status.
 const HIDE_ACTIVE_STYLES = {
   SKIP: 'bg-neutral-500 text-white ring-neutral-500',
-  REJECTED: 'bg-rose-600 text-white ring-rose-600 dark:bg-rose-500 dark:ring-rose-500',
   MISMATCH: 'bg-orange-500 text-white ring-orange-500 dark:bg-orange-500 dark:ring-orange-500',
   EXP_GAP: 'bg-violet-500 text-white ring-violet-500 dark:bg-violet-500 dark:ring-violet-500',
   EXPIRED: 'bg-neutral-600 text-white ring-neutral-600 dark:bg-neutral-500 dark:ring-neutral-500',
   DUPLICATE: 'bg-neutral-400 text-white ring-neutral-400 dark:bg-neutral-600 dark:ring-neutral-600',
 }
-const HIDEABLE = ['SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
+const HIDEABLE = ['SKIP', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
 
 const SOURCE_STYLES = {
   indeed: 'bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300',
@@ -237,7 +235,7 @@ function useDarkMode() {
   return [dark, setDark]
 }
 
-function ApplicationRow({ job, terms, onStage, onStatus, onMoveBack, onChanged }) {
+function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged }) {
   const [open, setOpen] = useState(false)
   const [history, setHistory] = useState(null)
   const [salary, setSalary] = useState(job.offer_salary || '')
@@ -433,13 +431,6 @@ function ApplicationRow({ job, terms, onStage, onStatus, onMoveBack, onChanged }
                 className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
                 ↩ Move back to Jobs
-              </button>
-              <button
-                onClick={() => onStatus(job, 'REJECTED')}
-                title="They said no — moves to Jobs as REJECTED (clears the stage)"
-                className="rounded-lg border border-rose-300 px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-400 dark:hover:bg-rose-950"
-              >
-                Mark rejected
               </button>
             </div>
           </td>
@@ -1160,11 +1151,6 @@ export default function App() {
             label="Applied (all time)"
             value={stats?.by_status?.APPLIED ?? 0}
             accent="bg-emerald-600"
-          />
-          <StatCard
-            label="Rejected (all time)"
-            value={stats?.by_status?.REJECTED ?? 0}
-            accent="bg-rose-600"
           />
           <StatCard
             label="Skipped (all time)"
@@ -1964,7 +1950,7 @@ export default function App() {
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {applicationRows.map((job) => (
                   <ApplicationRow key={job.id} job={job} terms={parsedSearch.terms}
-                    onStage={setStage} onStatus={changeStatus} onMoveBack={moveBackToJobs} onChanged={fetchAll} />
+                    onStage={setStage} onMoveBack={moveBackToJobs} onChanged={fetchAll} />
                 ))}
               </tbody>
             </table>
