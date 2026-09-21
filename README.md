@@ -179,16 +179,17 @@ the top drop reasons from the feedback learner (see below).
 - **Bulk editing:** tick the checkboxes (header box selects all filtered
   rows) and a bulk bar appears — pick a status once, apply it to the whole
   batch. Useful for triaging a fresh scrape.
-- **Hiring funnel:** past `APPLIED` the tracker keeps going. Set a row to
-  `INTERVIEW_INITIAL` and it moves out of Jobs into the **Interviews**
-  tab — advance `INITIAL → TECHNICAL → FINAL → OFFER` from the stage
-  dropdown as you progress, or `INTERVIEW_OUT` if you're cut (the tab
-  shows which stage preceded the cut, and **Timeline** expands the full
-  status history). Rows that reach `OFFER` / `OFFER_ACCEPTED` /
-  `OFFER_DECLINED` move to the **Offers** tab, where each has a salary
-  field plus expandable benefits / pros / cons notes for comparing
-  offers. Funnel statuses never train the feedback learner (interview
-  outcomes say how the process went, not whether the role was relevant).
+- **Hiring funnel:** `APPLIED` rows move out of Jobs into the
+  **Applications** tab, where a separate `stage` is tracked: `APPLIED →
+  INITIAL → TECHNICAL → FINAL → OFFER` (or `OUT` when you're cut, `ACCEPTED`
+  / `DECLINED` for outcomes). The tab has All / Interviews / Offers chips
+  plus its own filter; each row expands to a status+stage timeline (so you
+  can see which round preceded a cut) and, for offer stages, salary /
+  benefits / pros / cons notes for comparing offers. `↩ Move back to
+  Jobs` sends a row back to triage as `REVIEWED`. Triage `status` and
+  pipeline `stage` are separate axes — the status dropdown stays at 9
+  values, and stages never train the feedback learner (interview outcomes
+  say how the process went, not whether the role was relevant).
 - **Theme:** neutral black/gray chrome in light mode, full dark mode via
   the sun/moon button in the header (follows your OS preference on first
   visit, remembered after). Status pills, source badges, and graph lines
@@ -233,7 +234,12 @@ file upload is attempted.
   `search` (title/company substring), `sort` (`score` default desc |
   `scraped` | `posted`) + `direction` (`asc` to flip).
 - `PATCH /jobs/{id}` — `{"status": "..."}`; sets `applied_at` when
-  `APPLIED`, clears it when moving to any other status.
+  `APPLIED`, clears it when moving to any other status. Entering
+  `APPLIED` starts the funnel (`stage: APPLIED`); leaving it clears the
+  stage.
+- `PATCH /jobs/{id}/stage` — `{"stage": "TECHNICAL"}` advances the funnel
+  (`APPLIED|INITIAL|TECHNICAL|FINAL|OFFER|ACCEPTED|DECLINED|OUT`); on a
+  non-`APPLIED` row it flips status to `APPLIED` too.
 - `PATCH /jobs/{id}/followup` — `{"follow_up_at": "2026-09-28"}` (or
   `null` to clear) sets the ping-if-no-response reminder.
 - `POST /jobs/{id}/apply` — resolves the job's URL (the dashboard opens it
@@ -246,8 +252,8 @@ file upload is attempted.
    per day) for the graph.
 - `PATCH /jobs/{id}/offer` — save offer details (`offer_salary`,
   `offer_benefits`, `offer_pros`, `offer_cons`; only sent fields change).
-- `GET /jobs/{id}/history` — status timeline for one posting (shows which
-  interview stage a rejection came after).
+- `GET /jobs/{id}/history` — status + stage timeline for one posting
+  (shows which funnel stage a rejection came after).
 - `GET /runs/latest` — most recent `scrape_runs` row.
 - `POST /scrape` — start a scrape in the background (same code as
   `venv/bin/python main.py`); `409` if one is already running. Optional body

@@ -4,7 +4,8 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from api import db
-from api.models import FollowUpUpdate, HistoryEntry, Job, JobStatusUpdate, OfferUpdate
+from api.models import (FollowUpUpdate, HistoryEntry, Job, JobStatusUpdate,
+                        OfferUpdate, StageUpdate)
 
 router = APIRouter()
 
@@ -64,24 +65,27 @@ def list_jobs(
 @router.patch("/{job_id}", response_model=Job)
 def update_status(job_id: int, body: JobStatusUpdate):
     with db.connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
+        cur.execute("SELECT status, stage FROM jobs WHERE id = %s", (job_id,))
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="job not found")
-        old_status = row[0]
+        old_status, old_stage = row[0], row[1]
         if body.status == "APPLIED":
             cur.execute(
                 """
-                UPDATE jobs SET status = %s, applied_at = %s, status_updated_at = %s
+                UPDATE jobs SET status = %s, applied_at = %s, status_updated_at = %s,
+                                stage = COALESCE(stage, 'APPLIED')
                 WHERE id = %s RETURNING *
                 """,
                 (body.status, datetime.now(timezone.utc),
                  datetime.now(timezone.utc), job_id),
             )
         else:
+            # Leaving the pipeline: a non-APPLIED row carries no stage.
             cur.execute(
                 """
-                UPDATE jobs SET status = %s, applied_at = NULL, status_updated_at = %s
+                UPDATE jobs SET status = %s, applied_at = NULL, status_updated_at = %s,
+                                stage = NULL
                 WHERE id = %s RETURNING *
                 """,
                 (body.status, datetime.now(timezone.utc), job_id),
@@ -98,6 +102,66 @@ def update_status(job_id: int, body: JobStatusUpdate):
                 VALUES (%s, %s, %s)
                 """,
                 (job_id, old_status, body.status),
+            )
+        new_stage = result.get("stage")
+        if old_stage != new_stage:
+            cur.execute(
+                """
+                INSERT INTO job_stage_history (job_id, old_stage, new_stage)
+                VALUES (%s, %s, %s)
+                """,
+                (job_id, old_stage, new_stage),
+            )
+        conn.commit()
+        return result
+
+
+@router.patch("/{job_id}/stage", response_model=Job)
+def update_stage(job_id: int, body: StageUpdate):
+    """Advance a pipeline row's funnel stage.
+
+    Keeps the invariant stage-set ⟺ APPLIED: setting a stage on a
+    non-APPLIED row flips it to APPLIED (recorded in both histories).
+    """
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT status, stage FROM jobs WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="job not found")
+        old_status, old_stage = row[0], row[1]
+        if old_status == "APPLIED":
+            cur.execute(
+                "UPDATE jobs SET stage = %s WHERE id = %s RETURNING *",
+                (body.stage, job_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE jobs SET status = 'APPLIED', applied_at = %s,
+                                status_updated_at = %s, stage = %s
+                WHERE id = %s RETURNING *
+                """,
+                (datetime.now(timezone.utc), datetime.now(timezone.utc),
+                 body.stage, job_id),
+            )
+        row = cur.fetchone()
+        cols = [d.name for d in cur.description]
+        result = dict(zip(cols, row))
+        if old_status != "APPLIED":
+            cur.execute(
+                """
+                INSERT INTO job_status_history (job_id, old_status, new_status)
+                VALUES (%s, %s, 'APPLIED')
+                """,
+                (job_id, old_status),
+            )
+        if old_stage != body.stage:
+            cur.execute(
+                """
+                INSERT INTO job_stage_history (job_id, old_stage, new_stage)
+                VALUES (%s, %s, %s)
+                """,
+                (job_id, old_stage, body.stage),
             )
         conn.commit()
         return result
@@ -146,8 +210,8 @@ def update_offer(job_id: int, body: OfferUpdate):
 
 @router.get("/{job_id}/history", response_model=list[HistoryEntry])
 def job_history(job_id: int):
-    """Status timeline for one posting — shows which interview stage a
-    rejection came after (INTERVIEW_OUT's predecessor)."""
+    """Status + stage timeline for one posting — shows which funnel stage
+    a rejection came after."""
     with db.connect() as conn, conn.cursor() as cur:
         cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
         if not cur.fetchone():
@@ -161,5 +225,27 @@ def job_history(job_id: int):
             """,
             (job_id,),
         )
-        cols = [d.name for d in cur.description]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        entries = [
+            {"kind": "status", "old_status": r[0], "new_status": r[1],
+             "old_stage": None, "new_stage": None, "changed_at": r[2]}
+            for r in cur.fetchall()
+        ]
+        try:
+            cur.execute(
+                """
+                SELECT old_stage, new_stage, changed_at
+                FROM job_stage_history
+                WHERE job_id = %s
+                ORDER BY changed_at ASC
+                """,
+                (job_id,),
+            )
+            entries.extend(
+                {"kind": "stage", "old_status": None, "new_status": None,
+                 "old_stage": r[0], "new_stage": r[1], "changed_at": r[2]}
+                for r in cur.fetchall()
+            )
+        except Exception:
+            conn.rollback()  # stage table missing on very old DBs; status-only
+        entries.sort(key=lambda e: (e["changed_at"] or "", e["kind"]))
+        return entries

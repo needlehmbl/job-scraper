@@ -4,21 +4,20 @@ from datetime import date, datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field
 
 STATUSES = {"NEW", "REVIEWED", "APPLIED", "SKIP", "REJECTED",
-            "MISMATCH", "EXP_GAP", "EXPIRED", "DUPLICATE",
-            "INTERVIEW_INITIAL", "INTERVIEW_TECHNICAL", "INTERVIEW_FINAL",
-            "INTERVIEW_OUT", "OFFER", "OFFER_ACCEPTED", "OFFER_DECLINED"}
+            "MISMATCH", "EXP_GAP", "EXPIRED", "DUPLICATE"}
 
-# Funnel stages shown in the dashboard's Interviews tab (in process).
-INTERVIEW_STATUSES = {"INTERVIEW_INITIAL", "INTERVIEW_TECHNICAL",
-                      "INTERVIEW_FINAL", "INTERVIEW_OUT"}
-# Outcome stages shown in the dashboard's Offers tab.
-OFFER_STATUSES = {"OFFER", "OFFER_ACCEPTED", "OFFER_DECLINED"}
-# Pipeline rows "move out" of the main Jobs tab into those tabs.
-PIPELINE_STATUSES = INTERVIEW_STATUSES | OFFER_STATUSES
+# Hiring-funnel stages for APPLIED rows (tracked in the dashboard's
+# Applications tab). Triage `status` and pipeline `stage` are separate
+# axes; invariant: stage is set ⟺ status is APPLIED.
+STAGES = {"APPLIED", "INITIAL", "TECHNICAL", "FINAL",
+          "OFFER", "ACCEPTED", "DECLINED", "OUT"}
+INTERVIEW_STAGES = {"INITIAL", "TECHNICAL", "FINAL", "OUT"}
+OFFER_STAGES = {"OFFER", "ACCEPTED", "DECLINED"}
 
-_STATUS_PATTERN = (r"^(NEW|REVIEWED|APPLIED|SKIP|REJECTED|MISMATCH|EXP_GAP|EXPIRED|DUPLICATE"
-                   r"|INTERVIEW_INITIAL|INTERVIEW_TECHNICAL|INTERVIEW_FINAL|INTERVIEW_OUT"
-                   r"|OFFER|OFFER_ACCEPTED|OFFER_DECLINED)$")
+_STATUS_PATTERN = (r"^(NEW|REVIEWED|APPLIED|SKIP|REJECTED|MISMATCH|EXP_GAP"
+                   r"|EXPIRED|DUPLICATE)$")
+_STAGE_PATTERN = (r"^(APPLIED|INITIAL|TECHNICAL|FINAL"
+                  r"|OFFER|ACCEPTED|DECLINED|OUT)$")
 
 
 class Job(BaseModel):
@@ -39,6 +38,7 @@ class Job(BaseModel):
     score: int = 0
     score_reason: str = ""
     follow_up_at: date | None = None
+    stage: str | None = None
     offer_salary: str = ""
     offer_benefits: str = ""
     offer_pros: str = ""
@@ -53,6 +53,10 @@ class FollowUpUpdate(BaseModel):
     follow_up_at: date | None = None
 
 
+class StageUpdate(BaseModel):
+    stage: str = Field(pattern=_STAGE_PATTERN)
+
+
 class OfferUpdate(BaseModel):
     offer_salary: str | None = None
     offer_benefits: str | None = None
@@ -61,8 +65,11 @@ class OfferUpdate(BaseModel):
 
 
 class HistoryEntry(BaseModel):
+    kind: str = "status"  # status | stage
     old_status: str | None = None
-    new_status: str
+    new_status: str | None = None
+    old_stage: str | None = None
+    new_stage: str | None = None
     changed_at: datetime | None = None
 
 

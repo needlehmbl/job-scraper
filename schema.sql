@@ -14,11 +14,24 @@ CREATE TABLE IF NOT EXISTS jobs (
   score INT NOT NULL DEFAULT 0,        -- heuristic relevance 0-100 (score.py)
   score_reason TEXT NOT NULL DEFAULT '', -- one-line why (matched/missing skills)
   follow_up_at DATE DEFAULT NULL,      -- "ping if no response by" reminder
-  offer_salary TEXT NOT NULL DEFAULT '',   -- offer details (Offers tab)
+  stage TEXT DEFAULT NULL,             -- hiring-funnel stage (NULL = not in
+                                       -- pipeline; invariant: set ⟺ APPLIED)
+  offer_salary TEXT NOT NULL DEFAULT '',   -- offer details (Applications tab)
   offer_benefits TEXT NOT NULL DEFAULT '',
   offer_pros TEXT NOT NULL DEFAULT '',
   offer_cons TEXT NOT NULL DEFAULT '',
 );
+
+-- Stage-change audit trail for pipeline rows (mirrors job_status_history,
+-- which only tracks status changes).
+CREATE TABLE IF NOT EXISTS job_stage_history (
+  id SERIAL PRIMARY KEY,
+  job_id INT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  old_stage TEXT,
+  new_stage TEXT,
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS job_stage_history_job_id_idx ON job_stage_history(job_id);
 
 -- Audit trail of every dashboard status change. Powers the
 -- rejected/skipped/applied-over-time graph and the feedback learner

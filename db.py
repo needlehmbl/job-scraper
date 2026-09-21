@@ -115,10 +115,22 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score INT NOT NULL DEFAULT 0;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS follow_up_at DATE DEFAULT NULL;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT NULL;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_salary TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_benefits TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_pros TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_cons TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS job_stage_history (
+  id SERIAL PRIMARY KEY,
+  job_id INT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  old_stage TEXT,
+  new_stage TEXT,  -- NULL = left the pipeline (status moved off APPLIED)
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS job_stage_history_job_id_idx ON job_stage_history(job_id);
+-- Earlier revision created new_stage NOT NULL; leaving the pipeline
+-- legitimately records NULL, so relax it on existing databases too.
+ALTER TABLE job_stage_history ALTER COLUMN new_stage DROP NOT NULL;
 CREATE TABLE IF NOT EXISTS job_status_history (
   id SERIAL PRIMARY KEY,
   job_id INT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
