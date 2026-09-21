@@ -62,11 +62,11 @@ def _source(row) -> str:
     return site
 
 
-def _jrow(job) -> dict:
+def _jrow(job, bank_low=None, _score_fn=None) -> dict:
     dpost = job.get("date_posted")
     if dpost is None or _is_missing(dpost):
         dpost = None
-    return {
+    row = {
         "source": _source(job),
         "title": _clean(job.get("title", "")),
         "company": _clean(job.get("company", "")),
@@ -75,6 +75,18 @@ def _jrow(job) -> dict:
         "date_posted": dpost,
         "status": "NEW",
     }
+    try:
+        import score as score_mod
+        fn = _score_fn or score_mod.score_job
+        s, reason = fn(row["title"], row["company"],
+                       _clean(job.get("description", "")), bank_low)
+        row["score"] = s
+        row["score_reason"] = reason
+    except Exception as e:
+        print(f"[pipeline] WARNING: scoring failed ({e}); defaulting to 0.")
+        row["score"] = 0
+        row["score_reason"] = ""
+    return row
 
 
 def _xrow(job) -> dict:
@@ -107,6 +119,15 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         print(f"[pipeline] WARNING: tracking migration failed: {e}")
     jobs = scrape(cfg)
     print(f"[pipeline] {len(jobs)} jobs after scraping + filters")
+    src_report = dict(getattr(scraper_mod, "last_source_report", {}) or {})
+    warnings = [
+        f"{source}: 0 rows across {st['terms']} searches "
+        f"(layout may have changed{'; ' + st['errors'][0] if st.get('errors') else ''})"
+        for source, st in sorted(src_report.items())
+        if st.get("terms") and not st.get("rows")
+    ]
+    for w in warnings:
+        print(f"[pipeline] WARNING: {w}")
     fb = dict(getattr(scraper_mod, "last_feedback_report", {}) or {})
     heur_dropped = int(fb.get("heuristic_dropped", 0) or 0)
     ai_dropped = int(fb.get("ai_dropped", 0) or 0)
@@ -128,17 +149,37 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         print(f"[pipeline] WARNING: could not save filtered postings: {e}")
     if jobs.empty:
         print("[pipeline] nothing found -- check config.yaml search terms/location.")
+        summary = (
+            f"[run] {datetime.now().strftime('%a %b %d %H:%M')} · "
+            f"0 new · 0 scraped"
+            + (" · WARN: " + " | ".join(warnings) if warnings else "")
+        )
+        with open(cfg["paths"]["runs_log"], "a") as f:
+            f.write(summary + "\n")
         return {"added": 0, "scraped": 0, "summary": "no jobs found",
                 "filtered": filtered, "filter_reasons": top_reasons,
-                "filtered_saved": filtered_saved}
+                "filtered_saved": filtered_saved,
+                "source_stats": src_report, "warnings": warnings}
 
     sheet_path = cfg["paths"]["tracker_sheet"]
     df = tracker.load_or_init(sheet_path) if legacy_xlsx else None
 
+    try:
+        import score as score_mod
+        bank_low = score_mod.load_bank_text()
+    except Exception as e:
+        print(f"[pipeline] WARNING: could not load resume bank ({e}); scoring neutral.")
+        bank_low = ""
+
     added = 0
     for _, job in jobs.iterrows():
-        row = _jrow(job)
-        if db.find_existing(row) is not None:
+        row = _jrow(job, bank_low)
+        existing = db.find_existing(row)
+        if existing is not None:
+            try:
+                db.touch_last_seen(existing["id"])
+            except Exception as e:
+                print(f"[pipeline] WARNING: could not touch last_seen: {e}")
             continue
         if db.upsert_job(row):
             added += 1
@@ -152,6 +193,7 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
     summary = (
         f"[run] {datetime.now().strftime('%a %b %d %H:%M')} · "
         f"{added} new · {len(jobs)} scraped"
+        + (" · WARN: " + " | ".join(warnings) if warnings else "")
     )
     print(summary)
 
@@ -166,4 +208,5 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
 
     return {"added": added, "scraped": len(jobs), "summary": summary,
             "filtered": filtered, "filter_reasons": top_reasons,
-            "filtered_saved": filtered_saved}
+            "filtered_saved": filtered_saved,
+            "source_stats": src_report, "warnings": warnings}

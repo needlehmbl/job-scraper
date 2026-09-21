@@ -69,9 +69,11 @@ def upsert_job(row: dict, conn=None) -> bool:
             url = (row.get("url") or "").lower().rstrip("/")
             cur.execute(
                 """
-                INSERT INTO jobs (source, title, company, url, location, date_posted, status)
+                INSERT INTO jobs (source, title, company, url, location, date_posted, status,
+                                  score, score_reason)
                 VALUES (%(source)s, %(title)s, %(company)s, %(url)s, %(location)s,
-                        %(date_posted)s, %(status)s)
+                        %(date_posted)s, %(status)s,
+                        COALESCE(%(score)s, 0), COALESCE(%(score_reason)s, ''))
                 """,
                 {**row, "url": url},
             )
@@ -109,6 +111,10 @@ def record_run(started_at, finished_at, new_jobs_count, summary, conn=None) -> i
 
 TRACKING_DDL = """
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS status_updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score INT NOT NULL DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS follow_up_at DATE DEFAULT NULL;
 CREATE TABLE IF NOT EXISTS job_status_history (
   id SERIAL PRIMARY KEY,
   job_id INT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -162,6 +168,21 @@ def record_status_change(job_id: int, old_status, new_status: str, conn=None):
                 """,
                 (job_id, old_status, new_status),
             )
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def touch_last_seen(job_id: int, conn=None):
+    """Mark a posting re-seen by the latest scrape (freshness tracking)."""
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE jobs SET last_seen = now() WHERE id = %s",
+                        (job_id,))
             conn.commit()
     finally:
         if own:
@@ -319,19 +340,29 @@ def restore_filtered_job(fid: int, conn=None) -> dict | None:
                 return None
             f = dict(f)
             url = (f.get("url") or "").lower().rstrip("/")
+            try:
+                import score as score_mod
+                f_score, f_reason = score_mod.score_job(
+                    f.get("title") or "", f.get("company") or "",
+                    f.get("description") or "")
+            except Exception:
+                f_score, f_reason = 0, ""
             cur.execute("SELECT * FROM jobs WHERE url = %s", (url,))
             job = cur.fetchone()
             if job is None:
                 cur.execute(
                     """
-                    INSERT INTO jobs (source, title, company, url, location, date_posted, status)
-                    VALUES (%s, %s, %s, %s, %s, %s, 'NEW')
+                    INSERT INTO jobs (source, title, company, url, location, date_posted, status,
+                                      score, score_reason)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'NEW',
+                            COALESCE(%s, 0), COALESCE(%s, ''))
                     ON CONFLICT (url) DO NOTHING
                     RETURNING *
                     """,
                     (f.get("source") or "", f.get("title") or "",
                      f.get("company") or "", url, f.get("location"),
-                     f.get("date_posted")),
+                     f.get("date_posted"),
+                     f.get("score", f_score), f.get("score_reason", f_reason)),
                 )
                 job = cur.fetchone()
                 if job is None:  # lost a race with a concurrent insert; re-read

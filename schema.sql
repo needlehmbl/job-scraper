@@ -7,9 +7,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   location TEXT,
   date_posted DATE,
   status TEXT NOT NULL DEFAULT 'NEW',  -- NEW/REVIEWED/APPLIED/SKIP/REJECTED/MISMATCH/EXP_GAP/EXPIRED/DUPLICATE
-  scraped_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  scraped_at TIMESTAMPTZ NOT NULL DEFAULT now(),  -- first_seen
+  last_seen TIMESTAMPTZ NOT NULL DEFAULT now(), -- last scrape that still listed it
   applied_at TIMESTAMPTZ,
-  status_updated_at TIMESTAMPTZ NOT NULL DEFAULT now()  -- last dashboard decision time
+  status_updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),  -- last dashboard decision time
+  score INT NOT NULL DEFAULT 0,        -- heuristic relevance 0-100 (score.py)
+  score_reason TEXT NOT NULL DEFAULT '', -- one-line why (matched/missing skills)
+  follow_up_at DATE DEFAULT NULL,      -- "ping if no response by" reminder
 );
 
 -- Audit trail of every dashboard status change. Powers the

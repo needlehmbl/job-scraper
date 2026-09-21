@@ -71,6 +71,19 @@ function timeAgo(iso) {
   return `${Math.floor(s / 86400)}d ago`
 }
 
+const STALE_AFTER_DAYS = 30
+
+function isStale(job) {
+  const seen = job.last_seen || job.scraped_at
+  if (!seen) return false
+  return Date.now() - new Date(seen).getTime() > STALE_AFTER_DAYS * 86400e3
+}
+
+function isFollowupDue(job) {
+  if (!job.follow_up_at) return false
+  return String(job.follow_up_at).slice(0, 10) <= new Date().toISOString().slice(0, 10)
+}
+
 function Highlight({ text, query }) {
   const terms = (Array.isArray(query) ? query : [query])
     .map((q) => (q || '').trim().toLowerCase())
@@ -213,6 +226,8 @@ export default function App() {
   const [tab, setTab] = useState('jobs')
   const [filteredJobs, setFilteredJobs] = useState([])
   const [scrapedDir, setScrapedDir] = useState(null) // null | 'desc' | 'asc'
+  const [scoreDir, setScoreDir] = useState('desc') // null | 'desc' | 'asc' (default: best fit first)
+  const [dueOnly, setDueOnly] = useState(false)
   const [filteredNote, setFilteredNote] = useState('')
   const [restoring, setRestoring] = useState(null)
   const [showDupes, setShowDupes] = useState(false)
@@ -323,10 +338,13 @@ export default function App() {
       if (source && job.source !== source) return false
       if (dateFrom && String(job.date_posted || '').slice(0, 10) < dateFrom) return false
       if (dateTo && String(job.date_posted || '').slice(0, 10) > dateTo) return false
+      if (dueOnly && !isFollowupDue(job)) return false
       if (!matchesSearch(job, parsedSearch)) return false
       return true
     })
-  }, [jobs, status, hidden, source, dateFrom, dateTo, parsedSearch])
+  }, [jobs, status, hidden, source, dateFrom, dateTo, dueOnly, parsedSearch])
+
+  const dueCount = useMemo(() => jobs.filter(isFollowupDue).length, [jobs])
 
   const hiddenCounts = useMemo(() => {
     const counts = {}
@@ -352,17 +370,35 @@ export default function App() {
   )
 
   const sortedJobs = useMemo(() => {
-    if (!scrapedDir) return filtered
-    const dir = scrapedDir === 'asc' ? 1 : -1
+    // Explicit scraped-time sort wins when active; otherwise score-first
+    // (the API already returns score order, this keeps client-side
+    // filtering/sorting consistent).
+    if (scrapedDir) {
+      const dir = scrapedDir === 'asc' ? 1 : -1
+      return [...filtered].sort(
+        (a, b) =>
+          dir *
+          (new Date(a.scraped_at || 0).getTime() - new Date(b.scraped_at || 0).getTime())
+      )
+    }
+    if (!scoreDir) return filtered
+    const dir = scoreDir === 'asc' ? 1 : -1
     return [...filtered].sort(
-      (a, b) =>
-        dir *
-        (new Date(a.scraped_at || 0).getTime() - new Date(b.scraped_at || 0).getTime())
+      (a, b) => dir * ((a.score ?? 0) - (b.score ?? 0)) ||
+        (new Date(b.scraped_at || 0).getTime() - new Date(a.scraped_at || 0).getTime())
     )
-  }, [filtered, scrapedDir])
+  }, [filtered, scrapedDir, scoreDir])
 
   const cycleScrapedSort = useCallback(() => {
+    // Only one sort wins at a time.
+    setScoreDir(null)
     setScrapedDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
+  }, [])
+
+  const cycleScoreSort = useCallback(() => {
+    // Activating score sort clears the scraped sort so only one wins.
+    setScrapedDir(null)
+    setScoreDir((d) => (d === 'desc' ? 'asc' : d === 'asc' ? null : 'desc'))
   }, [])
 
   const updateJobs = useCallback(
@@ -390,8 +426,25 @@ export default function App() {
     [updateJobs, fetchAll]
   )
 
-  const handleApply = useCallback(
-    async (job) => {
+  const setFollowup = useCallback(
+    async (job, nextDate) => {
+      updateJobs(job.id, { follow_up_at: nextDate || null })
+      try {
+        await fetch(`${API}/jobs/${job.id}/followup`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ follow_up_at: nextDate || null }),
+        })
+        fetchAll()
+      } catch (e) {
+        console.error('follow-up update failed:', e)
+        fetchAll()
+      }
+    },
+    [updateJobs, fetchAll]
+  )
+
+    const handleApply = useCallback(    async (job) => {
       updateJobs(job.id, { status: 'REVIEWED' })
       setPendingApply(job.id)
       try {
@@ -525,7 +578,9 @@ export default function App() {
               : ''
           setScrapeNote(
             s.added != null
-              ? `Scrape finished: +${s.added} new (${s.scraped ?? 0} checked${filt}${held})`
+              ? `Scrape finished: +${s.added} new (${s.scraped ?? 0} checked${filt}${held})${
+                  s.warnings?.length ? ` ⚠ ${s.warnings.join(' | ')}` : ''
+                }`
               : 'Scrape finished.'
           )
         } else {
@@ -1116,6 +1171,17 @@ export default function App() {
               </button>
             )
           })}
+          <button
+            onClick={() => setDueOnly((v) => !v)}
+            title="Show only postings with a follow-up date of today or earlier"
+            className={`rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition ${
+              dueOnly
+                ? 'bg-violet-600 text-white ring-violet-600'
+                : 'bg-white text-neutral-500 ring-neutral-300 hover:bg-neutral-100 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700 dark:hover:bg-neutral-700'
+            }`}
+          >
+            {dueOnly ? '✕' : '◌'} Due follow-ups ({dueCount})
+          </button>
           <select
             value={source}
             onChange={(e) => setSource(e.target.value)}
@@ -1220,6 +1286,15 @@ export default function App() {
                   </th>
                   <th className="px-4 py-3 font-medium">Title</th>
                   <th className="px-4 py-3 font-medium">Company</th>
+                  <th className="px-4 py-3 font-medium">
+                    <button
+                      onClick={cycleScoreSort}
+                      title="Sort by fit score (skill overlap with your resume + junior fit − reject patterns; hover a score for the breakdown)"
+                      className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
+                    >
+                      Fit {scoreDir === 'desc' ? '▼' : scoreDir === 'asc' ? '▲' : '↕'}
+                    </button>
+                  </th>
                   <th className="px-4 py-3 font-medium">Source</th>
                   <th className="px-4 py-3 font-medium">Posted</th>
                   <th className="px-4 py-3 font-medium">
@@ -1230,6 +1305,9 @@ export default function App() {
                     >
                       Scraped {scrapedDir === 'desc' ? '▼' : scrapedDir === 'asc' ? '▲' : '↕'}
                     </button>
+                  </th>
+                  <th className="px-4 py-3 font-medium" title="Ping-if-no-response reminder (toggle with the Due follow-ups chip above)">
+                    Follow-up
                   </th>
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="px-4 py-3 text-right font-medium">Actions</th>
@@ -1260,6 +1338,19 @@ export default function App() {
                     <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
                       <Highlight text={job.company || '—'} query={parsedSearch.terms} />
                     </td>
+                    <td className="px-4 py-3" title={job.score_reason || 'No breakdown recorded (pre-score row)'}>
+                      <span
+                        className={`inline-block rounded px-2 py-0.5 text-xs font-semibold ${
+                          (job.score ?? 0) >= 60
+                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300'
+                            : (job.score ?? 0) >= 45
+                              ? 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300'
+                              : 'bg-neutral-200 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
+                        }`}
+                      >
+                        {job.score ?? 0}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <span
                         className={`inline-block rounded px-2 py-0.5 text-xs font-medium capitalize ${
@@ -1274,12 +1365,30 @@ export default function App() {
                     </td>
                     <td
                       className="whitespace-nowrap px-4 py-3 text-neutral-600 dark:text-neutral-400"
-                      title={job.scraped_at ? `Scraped ${timeAgo(job.scraped_at)}` : 'Scrape time unknown'}
+                      title={job.scraped_at ? `First seen ${timeAgo(job.scraped_at)} · last seen ${timeAgo(job.last_seen || job.scraped_at)}` : 'Scrape time unknown'}
                     >
                       {fmtDateTime(job.scraped_at)}
                       <span className="block text-xs text-neutral-400 dark:text-neutral-500">
-                        {timeAgo(job.scraped_at)}
+                        seen {timeAgo(job.last_seen || job.scraped_at)}
+                        {isStale(job) && (
+                          <span className="ml-1 rounded bg-amber-100 px-1 py-px font-medium text-amber-700 dark:bg-amber-900 dark:text-amber-300" title="Not seen in any scrape for 30+ days — link may be dead">
+                            stale
+                          </span>
+                        )}
                       </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <input
+                        type="date"
+                        value={job.follow_up_at ? String(job.follow_up_at).slice(0, 10) : ''}
+                        onChange={(e) => setFollowup(job, e.target.value)}
+                        title={job.follow_up_at ? `Follow up by ${String(job.follow_up_at).slice(0, 10)}` : 'Set a ping-if-no-response date'}
+                        className={`rounded-lg border px-2 py-1 text-xs dark:bg-neutral-800 ${
+                          isFollowupDue(job)
+                            ? 'border-rose-400 bg-rose-50 text-rose-700 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-300'
+                            : 'border-neutral-300 dark:border-neutral-700'
+                        }`}
+                      />
                     </td>
                     <td className="px-4 py-3">
                       <select

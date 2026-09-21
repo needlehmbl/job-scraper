@@ -19,12 +19,20 @@ class Job(BaseModel):
     date_posted: date | None = None
     status: str
     scraped_at: datetime
+    last_seen: datetime | None = None
     applied_at: datetime | None = None
     status_updated_at: datetime | None = None
+    score: int = 0
+    score_reason: str = ""
+    follow_up_at: date | None = None
 
 
 class JobStatusUpdate(BaseModel):
     status: str = Field(pattern=r"^(NEW|REVIEWED|APPLIED|SKIP|REJECTED|MISMATCH|EXP_GAP|EXPIRED|DUPLICATE)$")
+
+
+class FollowUpUpdate(BaseModel):
+    follow_up_at: date | None = None
 
 
 class FilteredJob(BaseModel):

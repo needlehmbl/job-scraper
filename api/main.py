@@ -18,6 +18,14 @@ from api.routes import apply, filtered, jobs, scrape, stats, tailor  # noqa: E40
 
 app = FastAPI(title="Job Scraper API", version="1.0.0")
 
+try:
+    from api import db as _db
+
+    _db.ensure_tracking_schema()
+    _db.ensure_filtered_schema()
+except Exception as e:  # API must stay up even if the DB is unreachable
+    print(f"[api] WARNING: schema migration failed: {e}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[

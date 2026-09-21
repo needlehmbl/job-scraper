@@ -70,6 +70,9 @@ cd dashboard && npm install && cd ..
 
 `db.py` connects over the local socket as your OS user (peer auth); override
 with the `DATABASE_URL` env var if you ever point it elsewhere.
+New columns (`score`, `last_seen`, `follow_up_at`, …) migrate
+automatically via `ensure_tracking_schema()` on the next scrape or API
+start — no manual `ALTER TABLE` needed.
 
 ## 3. Run it
 
@@ -130,6 +133,21 @@ for review** tabs sit above the table:
 - **Jobs tab** — the main table. The **Scraped** column shows when each
   posting entered the tracker (date + `xh ago`); click its header to sort
   newest/oldest, so a fresh scrape is easy to tell apart from older rows.
+  The second line under each date is `seen …` (last scrape that still
+  listed it) plus a `stale` tag when a posting hasn't been re-seen for
+  30+ days — its link may be dead, check before applying.
+- **Fit column** — heuristic relevance 0–100, sorted best-first by
+  default (click the header to flip/clear). `+` = posting skills found on
+  your resume, `missing` = posting asks for what you don't list,
+  entry-level postings get a small bonus, and titles matching your past
+  reject patterns lose points. Hover any score for the one-line
+  breakdown. Computed locally from `resume_bank.yaml` (or your default
+  uploaded resume) at scrape time — zero LLM cost. Title-only for older
+  rows (the tracker stores no descriptions); new scrapes score with the
+  full posting text.
+- **Follow-up column** — date picker per row ("ping if no response by").
+  Overdue dates highlight red; the `◌ Due follow-ups (n)` chip above the
+  table filters to just those. Cleared by picking an empty date.
 - **Filtered tab** — every posting the feedback learner held out of a
   scrape, newest first, with the exact reason (`title-keyword:…`,
   `location:…`, `company:…`, `ai:…`), the search term that found it, and an
@@ -202,9 +220,12 @@ file upload is attempted.
 ## API
 
 - `GET /jobs` — query params: `status`, `source`, `date_from`, `date_to`,
-  `search` (title/company substring).
+  `search` (title/company substring), `sort` (`score` default desc |
+  `scraped` | `posted`) + `direction` (`asc` to flip).
 - `PATCH /jobs/{id}` — `{"status": "..."}`; sets `applied_at` when
   `APPLIED`, clears it when moving to any other status.
+- `PATCH /jobs/{id}/followup` — `{"follow_up_at": "2026-09-28"}` (or
+  `null` to clear) sets the ping-if-no-response reminder.
 - `POST /jobs/{id}/apply` — resolves the job's URL (the dashboard opens it
   in a new tab; no browser automation).
 - `GET /stats` — counts by status/source, new-this-week, per-outcome this-week
@@ -219,9 +240,13 @@ file upload is attempted.
   `{"legacy_xlsx": true}` mirrors to `applications.xlsx`.
 - `GET /scrape/status` — `idle | running | done | error` plus `added` /
   `scraped` counts, the run `summary`, `filtered_saved` (rows held in the
-  Filtered tab), and the feedback breakdown
-  (`filtered`, `filter_reasons`); the dashboard polls this while the
-  **Scrape new jobs** button shows `Scraping…`.
+  Filtered tab), the feedback breakdown
+  (`filtered`, `filter_reasons`), and source health (`source_stats` per
+  board plus `warnings`, e.g. `linkedin: 0 rows across 16 searches` when a
+  site layout likely changed); the dashboard polls this while the
+  **Scrape new jobs** button shows `Scraping…`, and warnings are appended
+  to the header note plus the `runs.log` line (so the desktop notifier
+  shows them).
 - `GET /filtered` — held-out postings, newest first
   (`?include_restored=true` keeps restored ones too).
 - `POST /filtered/{id}/restore` — move a held posting back into `jobs`

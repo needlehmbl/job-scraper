@@ -23,6 +23,12 @@ from locations import is_metro_manila, is_ph_or_metro
 # Single-user local tool: the pipeline reads this right after scrape().
 last_feedback_report: dict = {}
 
+# Per-source health for the last scrape(), filled at the end of every run:
+# {source: {"terms": int, "rows": int, "errors": [str]}}.
+# The pipeline turns all-attempted-but-empty sources into warnings so a
+# silently-changed site layout surfaces instead of looking like "no jobs".
+last_source_report: dict = {}
+
 
 def load_config(path="config.yaml"):
     with open(path) as f:
@@ -118,6 +124,15 @@ def normalize_url(url) -> str:
 def scrape(cfg: dict) -> pd.DataFrame:
     s = cfg["search"]
     all_frames = []
+    global last_source_report
+    stats: dict = {}  # source -> {"terms", "rows", "errors"}
+
+    def note(source: str, rows: int = 0, error: str = ""):
+        e = stats.setdefault(source, {"terms": 0, "rows": 0, "errors": []})
+        e["terms"] += 1
+        e["rows"] += rows
+        if error and error not in e["errors"]:
+            e["errors"].append(error[:160])
 
     # jobspy only knows its own providers; JobStreet is scraped by jobstreet.py.
     sites = s.get("site_names", ["indeed", "linkedin"])
@@ -172,12 +187,15 @@ def scrape(cfg: dict) -> pd.DataFrame:
                 df = scrape_jobs(**kwargs)
             except Exception as e:
                 print(f"[scraper] WARNING: '{site}' search for '{term}' failed: {e}")
+                note(site, error=f"{term}: {e}")
                 continue
             if df is not None and not df.empty:
                 df["matched_search_term"] = term
                 all_frames.append(df)
+                note(site, rows=len(df))
             else:
                 print(f"[scraper] '{site}' returned no results for '{term}'")
+                note(site)
 
     if use_jobstreet:
         try:
@@ -192,9 +210,13 @@ def scrape(cfg: dict) -> pd.DataFrame:
             if "Executable doesn't exist" in str(e):
                 print("[scraper] HINT: Playwright's browser build is missing -- run "
                       "'venv/bin/python -m playwright install chromium' to fix.")
+            note("jobstreet", error=str(e))
             js_df = None
         if js_df is not None and not js_df.empty:
             all_frames.append(js_df)
+            note("jobstreet", rows=len(js_df))
+        elif js_df is not None:
+            note("jobstreet")
 
     # Direct company boards (Greenhouse/Lever JSON APIs, no browser needed).
     # Slugs live in top-level `company_boards:` (list or {slug: name});
@@ -221,10 +243,20 @@ def scrape(cfg: dict) -> pd.DataFrame:
                 )
         except Exception as e:
             print(f"[scraper] WARNING: {label} boards scrape failed: {e}")
+            note(label, error=str(e))
             b_df = None
         if b_df is not None and not b_df.empty:
             b_df["_loose_location"] = True
             all_frames.append(b_df)
+            note(label, rows=len(b_df))
+        elif b_df is not None:
+            note(label)
+
+    last_source_report = stats
+    for source, st in stats.items():
+        if st["terms"] and not st["rows"]:
+            print(f"[scraper] WARNING: '{source}' returned 0 rows across "
+                  f"{st['terms']} searches -- the site layout may have changed.")
 
     if not all_frames:
         return pd.DataFrame()

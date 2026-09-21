@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from api import db
-from api.models import Job, JobStatusUpdate
+from api.models import FollowUpUpdate, Job, JobStatusUpdate
 
 router = APIRouter()
 
@@ -16,6 +16,8 @@ def list_jobs(
     date_from: date | None = None,
     date_to: date | None = None,
     search: str | None = None,
+    sort: str | None = None,
+    direction: str | None = None,
 ):
     sql = "SELECT * FROM jobs WHERE 1=1"
     params: list = []
@@ -37,7 +39,20 @@ def list_jobs(
         like = f"%{search}%"
         params.extend([like, like])
 
-    sql += " ORDER BY date_posted DESC NULLS LAST, scraped_at DESC"
+    # Triage sort: ?sort=score (default desc) | scraped | posted.
+    # Default is score-first so the most relevant rows surface on load.
+    sort = (sort or "score").lower()
+    direction = (direction or "").lower()
+    if sort == "scraped":
+        order = "scraped_at DESC" if direction != "asc" else "scraped_at ASC"
+    elif sort == "posted":
+        order = ("date_posted DESC NULLS LAST, scraped_at DESC"
+                 if direction != "asc" else
+                 "date_posted ASC NULLS LAST, scraped_at ASC")
+    else:
+        order = "score DESC, scraped_at DESC" if direction != "asc" else \
+            "score ASC, scraped_at ASC"
+    sql += f" ORDER BY {order}"
 
     with db.connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
@@ -84,5 +99,23 @@ def update_status(job_id: int, body: JobStatusUpdate):
                 """,
                 (job_id, old_status, body.status),
             )
+        conn.commit()
+        return result
+
+
+@router.patch("/{job_id}/followup", response_model=Job)
+def update_followup(job_id: int, body: FollowUpUpdate):
+    """Set/clear the "ping if no response by" reminder date."""
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="job not found")
+        cur.execute(
+            "UPDATE jobs SET follow_up_at = %s WHERE id = %s RETURNING *",
+            (body.follow_up_at, job_id),
+        )
+        row = cur.fetchone()
+        cols = [d.name for d in cur.description]
+        result = dict(zip(cols, row))
         conn.commit()
         return result
