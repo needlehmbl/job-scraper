@@ -11,7 +11,10 @@ Statuses outside GOOD/BAD -- NEW (undecided), EXPIRED (dead link, not
 a relevance judgment) and DUPLICATE (repeat posting, not a relevance
 judgment) -- are never used for learning, so archiving an
 expired posting as EXPIRED (or a repeat as DUPLICATE) can never teach
-the filter to ban its title.
+the filter to ban its title. The post-APPLIED hiring funnel
+(INTERVIEW_INITIAL / TECHNICAL / FINAL / OUT, OFFER / ACCEPTED /
+DECLINED) is likewise excluded: interview outcomes say how the process
+went, not whether the role was relevant.
 
 Two layers, cheapest first:
 

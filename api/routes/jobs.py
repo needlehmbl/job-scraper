@@ -4,7 +4,7 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from api import db
-from api.models import FollowUpUpdate, Job, JobStatusUpdate
+from api.models import FollowUpUpdate, HistoryEntry, Job, JobStatusUpdate, OfferUpdate
 
 router = APIRouter()
 
@@ -119,3 +119,47 @@ def update_followup(job_id: int, body: FollowUpUpdate):
         result = dict(zip(cols, row))
         conn.commit()
         return result
+
+
+@router.patch("/{job_id}/offer", response_model=Job)
+def update_offer(job_id: int, body: OfferUpdate):
+    """Save offer details (salary / benefits / pros / cons). Only the
+    fields present in the body are changed."""
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="job not found")
+        set_clause = ", ".join(f"{k} = %s" for k in updates)
+        cur.execute(
+            f"UPDATE jobs SET {set_clause} WHERE id = %s RETURNING *",
+            (*updates.values(), job_id),
+        )
+        row = cur.fetchone()
+        cols = [d.name for d in cur.description]
+        result = dict(zip(cols, row))
+        conn.commit()
+        return result
+
+
+@router.get("/{job_id}/history", response_model=list[HistoryEntry])
+def job_history(job_id: int):
+    """Status timeline for one posting — shows which interview stage a
+    rejection came after (INTERVIEW_OUT's predecessor)."""
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="job not found")
+        cur.execute(
+            """
+            SELECT old_status, new_status, changed_at
+            FROM job_status_history
+            WHERE job_id = %s
+            ORDER BY changed_at ASC
+            """,
+            (job_id,),
+        )
+        cols = [d.name for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]

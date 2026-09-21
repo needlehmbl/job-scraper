@@ -13,8 +13,22 @@ import { defaultKeeper, findDuplicateGroups } from './duplicates.js'
 
 const API = 'http://127.0.0.1:8000'
 
-const STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
+const STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE',
+  'INTERVIEW_INITIAL', 'INTERVIEW_TECHNICAL', 'INTERVIEW_FINAL', 'INTERVIEW_OUT',
+  'OFFER', 'OFFER_ACCEPTED', 'OFFER_DECLINED']
 const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google', 'greenhouse', 'lever']
+
+// Hiring-funnel stages live in their own tabs; the Jobs tab hides them.
+const INTERVIEW_STATUSES = ['INTERVIEW_INITIAL', 'INTERVIEW_TECHNICAL', 'INTERVIEW_FINAL', 'INTERVIEW_OUT']
+const OFFER_STATUSES = ['OFFER', 'OFFER_ACCEPTED', 'OFFER_DECLINED']
+const PIPELINE_STATUSES = new Set([...INTERVIEW_STATUSES, ...OFFER_STATUSES])
+
+const STAGE_LABELS = {
+  INTERVIEW_INITIAL: 'Initial',
+  INTERVIEW_TECHNICAL: 'Technical',
+  INTERVIEW_FINAL: 'Final',
+  INTERVIEW_OUT: 'Out',
+}
 
 const STATUS_STYLES = {
   NEW: 'bg-neutral-800 text-white ring-neutral-800 dark:bg-neutral-100 dark:text-neutral-900 dark:ring-neutral-100',
@@ -26,6 +40,13 @@ const STATUS_STYLES = {
   EXP_GAP: 'bg-violet-100 text-violet-700 ring-violet-200 dark:bg-violet-900 dark:text-violet-300 dark:ring-violet-800',
   EXPIRED: 'bg-neutral-400 text-white ring-neutral-400 dark:bg-neutral-600 dark:text-neutral-200 dark:ring-neutral-600',
   DUPLICATE: 'bg-neutral-200 text-neutral-500 ring-neutral-300 line-through dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700',
+  INTERVIEW_INITIAL: 'bg-sky-100 text-sky-700 ring-sky-200 dark:bg-sky-900 dark:text-sky-300 dark:ring-sky-800',
+  INTERVIEW_TECHNICAL: 'bg-indigo-100 text-indigo-700 ring-indigo-200 dark:bg-indigo-900 dark:text-indigo-300 dark:ring-indigo-800',
+  INTERVIEW_FINAL: 'bg-blue-100 text-blue-700 ring-blue-200 dark:bg-blue-900 dark:text-blue-300 dark:ring-blue-800',
+  INTERVIEW_OUT: 'bg-neutral-300 text-neutral-700 ring-neutral-400 dark:bg-neutral-700 dark:text-neutral-300 dark:ring-neutral-600',
+  OFFER: 'bg-yellow-100 text-yellow-700 ring-yellow-200 dark:bg-yellow-900 dark:text-yellow-300 dark:ring-yellow-800',
+  OFFER_ACCEPTED: 'bg-emerald-600 text-white ring-emerald-600 dark:bg-emerald-500 dark:ring-emerald-500',
+  OFFER_DECLINED: 'bg-neutral-200 text-neutral-500 ring-neutral-300 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700',
 }
 
 // Negative-status hide pills: active (hiding) color per status.
@@ -204,6 +225,237 @@ function useDarkMode() {
   return [dark, setDark]
 }
 
+function InterviewRow({ job, terms, onStatus }) {
+  const [open, setOpen] = useState(false)
+  const [history, setHistory] = useState(null)
+
+  const loadHistory = useCallback(async () => {
+    if (history !== null) return
+    try {
+      const r = await fetch(`${API}/jobs/${job.id}/history`)
+      setHistory(r.ok ? await r.json() : [])
+    } catch (e) {
+      console.error('history fetch failed:', e)
+      setHistory([])
+    }
+  }, [job.id, history])
+
+  const toggle = () => {
+    if (!open) loadHistory()
+    setOpen((v) => !v)
+  }
+
+  // Which stage the rejection came after (OUT's predecessor in history).
+  const outAfter = useMemo(() => {
+    if (job.status !== 'INTERVIEW_OUT' || !history) return ''
+    const outEntry = [...history].reverse().find((h) => h.new_status === 'INTERVIEW_OUT')
+    return (outEntry && outEntry.old_status) || ''
+  }, [job.status, history])
+
+  return (
+    <>
+      <tr className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+        <td className="px-4 py-3">
+          <a href={job.url} target="_blank" rel="noreferrer"
+            className="font-medium text-neutral-800 hover:text-black hover:underline dark:text-neutral-200 dark:hover:text-white">
+            <Highlight text={job.title || 'Untitled'} query={terms} />
+          </a>
+          {job.status === 'INTERVIEW_OUT' && outAfter && (
+            <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+              out after {STAGE_LABELS[outAfter] || outAfter}
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
+          <Highlight text={job.company || '—'} query={terms} />
+        </td>
+        <td className="px-4 py-3">
+          <select
+            value={job.status}
+            onChange={(e) => onStatus(job, e.target.value)}
+            className={`rounded-full border-0 px-3 py-1 text-xs font-medium ring-1 text-center ${
+              STATUS_STYLES[job.status] || 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
+            }`}
+            title="Advance the stage (APPLIED → INITIAL → TECHNICAL → FINAL → OFFER, or OUT)"
+          >
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </td>
+        <td className="whitespace-nowrap px-4 py-3 text-neutral-600 dark:text-neutral-400">
+          {fmtDateTime(job.status_updated_at)}
+          <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+            {timeAgo(job.status_updated_at)}
+          </span>
+        </td>
+        <td className="px-4 py-3 text-right">
+          <button
+            onClick={toggle}
+            title="Show the status timeline for this application"
+            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+          >
+            {open ? 'Hide' : 'Timeline'}
+          </button>
+        </td>
+      </tr>
+      {open && (
+        <tr className="bg-neutral-50 dark:bg-neutral-800/30">
+          <td colSpan={5} className="px-8 py-3">
+            {history === null ? (
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">Loading…</p>
+            ) : history.length === 0 ? (
+              <p className="text-xs text-neutral-500 dark:text-neutral-400">
+                No recorded transitions yet — stages you set from here on are tracked.
+              </p>
+            ) : (
+              <ol className="space-y-1 text-xs text-neutral-600 dark:text-neutral-400">
+                {history.map((h, i) => (
+                  <li key={i}>
+                    <span className="font-medium text-neutral-700 dark:text-neutral-300">
+                      {h.old_status || '—'} → {h.new_status}
+                    </span>
+                    <span className="ml-2 text-neutral-400 dark:text-neutral-500">
+                      {fmtDateTime(h.changed_at)}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+function OfferRow({ job, terms, onStatus, onChanged }) {
+  const [salary, setSalary] = useState(job.offer_salary || '')
+  const [benefits, setBenefits] = useState(job.offer_benefits || '')
+  const [pros, setPros] = useState(job.offer_pros || '')
+  const [cons, setCons] = useState(job.offer_cons || '')
+  const [open, setOpen] = useState(false)
+  const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  // Refresh the editor when another tab/row update replaces the job object.
+  useEffect(() => {
+    setSalary(job.offer_salary || '')
+    setBenefits(job.offer_benefits || '')
+    setPros(job.offer_pros || '')
+    setCons(job.offer_cons || '')
+  }, [job.offer_salary, job.offer_benefits, job.offer_pros, job.offer_cons])
+
+  const save = useCallback(async (patch) => {
+    setSaving(true)
+    setNote('')
+    try {
+      const r = await fetch(`${API}/jobs/${job.id}/offer`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      if (!r.ok) throw new Error(`save failed (${r.status})`)
+      setNote('Saved.')
+      await onChanged()
+    } catch (e) {
+      console.error('offer save failed:', e)
+      setNote(`Save failed: ${e.message}`)
+    }
+    setSaving(false)
+  }, [job.id, onChanged])
+
+  const accepted = job.status === 'OFFER_ACCEPTED'
+
+  return (
+    <>
+      <tr className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+        <td className="px-4 py-3">
+          <a href={job.url} target="_blank" rel="noreferrer"
+            className="font-medium text-neutral-800 hover:text-black hover:underline dark:text-neutral-200 dark:hover:text-white">
+            <Highlight text={job.title || 'Untitled'} query={terms} />
+          </a>
+          {accepted && (
+            <span className="block text-xs font-medium text-emerald-600 dark:text-emerald-400">accepted ✓</span>
+          )}
+        </td>
+        <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
+          <Highlight text={job.company || '—'} query={terms} />
+        </td>
+        <td className="px-4 py-3">
+          <select
+            value={job.status}
+            onChange={(e) => onStatus(job, e.target.value)}
+            className={`rounded-full border-0 px-3 py-1 text-xs font-medium ring-1 text-center ${
+              STATUS_STYLES[job.status] || 'bg-neutral-100 text-neutral-600 dark:bg-neutral-700 dark:text-neutral-300'
+            }`}
+            title="Offer outcome"
+          >
+            {STATUSES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </td>
+        <td className="px-4 py-3">
+          <input
+            value={salary}
+            onChange={(e) => setSalary(e.target.value)}
+            onBlur={() => { if (salary !== (job.offer_salary || '')) save({ offer_salary: salary }) }}
+            placeholder="e.g. ₱35k/mo"
+            title="Offered salary (saves on blur)"
+            className="w-32 rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800"
+          />
+        </td>
+        <td className="px-4 py-3 text-right">
+          <button
+            onClick={() => setOpen((v) => !v)}
+            title="Edit benefits, pros and cons"
+            className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+          >
+            {open ? 'Hide' : 'Details'}
+          </button>
+        </td>
+      </tr>
+      {open && (
+        <tr className="bg-neutral-50 dark:bg-neutral-800/30">
+          <td colSpan={5} className="px-8 py-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <label className="text-xs text-neutral-600 dark:text-neutral-400">
+                Benefits
+                <textarea value={benefits} onChange={(e) => setBenefits(e.target.value)} rows={3}
+                  placeholder="HMO, 13th month, hybrid…"
+                  className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+              </label>
+              <label className="text-xs text-neutral-600 dark:text-neutral-400">
+                Pros
+                <textarea value={pros} onChange={(e) => setPros(e.target.value)} rows={3}
+                  placeholder="Growth, stack, mentorship…"
+                  className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+              </label>
+              <label className="text-xs text-neutral-600 dark:text-neutral-400">
+                Cons
+                <textarea value={cons} onChange={(e) => setCons(e.target.value)} rows={3}
+                  placeholder="Commute, on-call, lowball…"
+                  className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+              </label>
+            </div>
+            <div className="mt-2 flex items-center gap-3">
+              <button
+                onClick={() => save({ offer_salary: salary, offer_benefits: benefits, offer_pros: pros, offer_cons: cons })}
+                disabled={saving}
+                className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              >
+                {saving ? 'Saving…' : 'Save details'}
+              </button>
+              {note && <span className="text-xs text-neutral-500 dark:text-neutral-400" role="status">{note}</span>}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
 export default function App() {
   const [dark, setDark] = useDarkMode()
   const [jobs, setJobs] = useState([])
@@ -369,25 +621,56 @@ export default function App() {
     [pendingFiltered, parsedSearch]
   )
 
+  // Pipeline rows "move out" of Jobs once they enter the hiring funnel.
+  const jobsBase = useMemo(
+    () => filtered.filter((job) => !PIPELINE_STATUSES.has(job.status)),
+    [filtered]
+  )
+
+  const interviewRows = useMemo(
+    () =>
+      jobs
+        .filter((job) => INTERVIEW_STATUSES.includes(job.status) && matchesSearch(job, parsedSearch))
+        .sort((a, b) => new Date(b.status_updated_at || 0).getTime() - new Date(a.status_updated_at || 0).getTime()),
+    [jobs, parsedSearch]
+  )
+
+  const offerRows = useMemo(
+    () =>
+      jobs
+        .filter((job) => OFFER_STATUSES.includes(job.status) && matchesSearch(job, parsedSearch))
+        .sort((a, b) => new Date(b.status_updated_at || 0).getTime() - new Date(a.status_updated_at || 0).getTime()),
+    [jobs, parsedSearch]
+  )
+
+  const pipelineCounts = useMemo(() => {
+    const counts = {}
+    for (const job of jobs) counts[job.status] = (counts[job.status] || 0) + 1
+    return {
+      interviews: INTERVIEW_STATUSES.reduce((n, s) => n + (counts[s] || 0), 0),
+      offers: OFFER_STATUSES.reduce((n, s) => n + (counts[s] || 0), 0),
+    }
+  }, [jobs])
+
   const sortedJobs = useMemo(() => {
     // Explicit scraped-time sort wins when active; otherwise score-first
     // (the API already returns score order, this keeps client-side
     // filtering/sorting consistent).
     if (scrapedDir) {
       const dir = scrapedDir === 'asc' ? 1 : -1
-      return [...filtered].sort(
+      return [...jobsBase].sort(
         (a, b) =>
           dir *
           (new Date(a.scraped_at || 0).getTime() - new Date(b.scraped_at || 0).getTime())
       )
     }
-    if (!scoreDir) return filtered
+    if (!scoreDir) return jobsBase
     const dir = scoreDir === 'asc' ? 1 : -1
-    return [...filtered].sort(
+    return [...jobsBase].sort(
       (a, b) => dir * ((a.score ?? 0) - (b.score ?? 0)) ||
         (new Date(b.scraped_at || 0).getTime() - new Date(a.scraped_at || 0).getTime())
     )
-  }, [filtered, scrapedDir, scoreDir])
+  }, [jobsBase, scrapedDir, scoreDir])
 
   const cycleScrapedSort = useCallback(() => {
     // Only one sort wins at a time.
@@ -886,6 +1169,16 @@ export default function App() {
             accent="bg-neutral-300"
           />
           <StatCard
+            label="In interviews"
+            value={pipelineCounts.interviews}
+            accent="bg-sky-500"
+          />
+          <StatCard
+            label="Offers"
+            value={pipelineCounts.offers}
+            accent="bg-yellow-500"
+          />
+          <StatCard
             label={`Decided this week (${barData.length} day${barData.length === 1 ? '' : 's'})`}
             value={decidedThisWeek}
             accent="bg-violet-600"
@@ -1017,7 +1310,7 @@ export default function App() {
                 : 'border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800'
             }`}
           >
-            Jobs ({filtered.length})
+            Jobs ({jobsBase.length})
           </button>
           <button
             onClick={() => setTab('filtered')}
@@ -1029,6 +1322,28 @@ export default function App() {
             }`}
           >
             Filtered for review ({pendingFiltered.length})
+          </button>
+          <button
+            onClick={() => setTab('interviews')}
+            title="Applications in the interview process — advance stages here"
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              tab === 'interviews'
+                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                : 'border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800'
+            }`}
+          >
+            Interviews ({pipelineCounts.interviews})
+          </button>
+          <button
+            onClick={() => setTab('offers')}
+            title="Received offers — compare salary, benefits, pros and cons"
+            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+              tab === 'offers'
+                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                : 'border border-neutral-300 bg-white text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800'
+            }`}
+          >
+            Offers ({pipelineCounts.offers})
           </button>
           {tab === 'filtered' && (
             <span className="text-sm text-neutral-500 dark:text-neutral-400">
@@ -1220,7 +1535,7 @@ export default function App() {
             className="min-w-52 flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
           />
           <span className="text-sm text-neutral-500 dark:text-neutral-400">
-            {filtered.length} of {jobs.length}
+            {jobsBase.length} of {jobs.length}
           </span>
         </section>
         )}
@@ -1541,6 +1856,70 @@ export default function App() {
                       </div>
                     </td>
                   </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+        )}
+
+        {tab === 'interviews' && (
+        <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+          {loading ? (
+            <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+              Loading interviews…
+            </div>
+          ) : interviewRows.length === 0 ? (
+            <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+              Nothing in the interview process. Move a row here by setting its
+              status to INTERVIEW_INITIAL from the Jobs table.
+            </div>
+          ) : (
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Title</th>
+                  <th className="px-4 py-3 font-medium">Company</th>
+                  <th className="px-4 py-3 font-medium">Stage</th>
+                  <th className="px-4 py-3 font-medium">Updated</th>
+                  <th className="px-4 py-3 text-right font-medium">Timeline</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                {interviewRows.map((job) => (
+                  <InterviewRow key={job.id} job={job} terms={parsedSearch.terms} onStatus={changeStatus} />
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+        )}
+
+        {tab === 'offers' && (
+        <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+          {loading ? (
+            <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+              Loading offers…
+            </div>
+          ) : offerRows.length === 0 ? (
+            <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
+              No offers yet. Set a row to OFFER and it lands here with room
+              for salary, benefits, pros and cons.
+            </div>
+          ) : (
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
+                <tr>
+                  <th className="px-4 py-3 font-medium">Title</th>
+                  <th className="px-4 py-3 font-medium">Company</th>
+                  <th className="px-4 py-3 font-medium">Outcome</th>
+                  <th className="px-4 py-3 font-medium">Salary</th>
+                  <th className="px-4 py-3 text-right font-medium">Details</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                {offerRows.map((job) => (
+                  <OfferRow key={job.id} job={job} terms={parsedSearch.terms} onStatus={changeStatus} onChanged={fetchAll} />
                 ))}
               </tbody>
             </table>

@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   score INT NOT NULL DEFAULT 0,        -- heuristic relevance 0-100 (score.py)
   score_reason TEXT NOT NULL DEFAULT '', -- one-line why (matched/missing skills)
   follow_up_at DATE DEFAULT NULL,      -- "ping if no response by" reminder
+  offer_salary TEXT NOT NULL DEFAULT '',   -- offer details (Offers tab)
+  offer_benefits TEXT NOT NULL DEFAULT '',
+  offer_pros TEXT NOT NULL DEFAULT '',
+  offer_cons TEXT NOT NULL DEFAULT '',
 );
 
 -- Audit trail of every dashboard status change. Powers the
