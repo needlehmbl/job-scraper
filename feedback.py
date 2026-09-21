@@ -19,7 +19,8 @@ the role was relevant.
 Two layers, cheapest first:
 
 1. Heuristic (always on, no API needed): learns from the location field
-   first (cities you always skip), then from title/company words -- but a
+   first (cities you always skip), then from title/company words and from
+   stack skills in titles+descriptions -- but a
    skip already explained by a bad location is NOT blamed on its title,
    so skipping "Junior Developer (Cebu)" for location can never teach
    the filter to ban "developer".
@@ -70,6 +71,11 @@ _DEFAULTS = {
     "auto_exclude_companies": True,
     "min_company_hits": 2,
     "min_company_reject_rate": 0.75,
+    # Stack-skill learning from titles+descriptions (Pass 3): canonical
+    # stack names that overwhelmingly appear in rejected/skipped postings
+    # are auto-excluded -- catches generic-titled roles whose description
+    # reveals the wrong stack, with no explicit note needed from you.
+    "learn_desc_skills": True,
     "use_ai": True,
     "ai_provider": "auto",   # auto|groq|openrouter|mistral|gemini|off
     "ai_model": "",
@@ -145,7 +151,11 @@ def norm_title(text: str) -> str:
 
 
 def load_decisions(conn=None) -> list[dict]:
-    """Fetch decided jobs (title/company/location/status) from the dashboard DB."""
+    """Fetch decided jobs (title/company/location/description/status).
+
+    `description` is NULL for rows stored before it was added -- those
+    rows still teach via title/company/location.
+    """
     import db
 
     own = conn is None
@@ -155,7 +165,7 @@ def load_decisions(conn=None) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT title, company, location, status FROM jobs
+                SELECT title, company, location, description, status FROM jobs
                 WHERE status = ANY(%s)
                 ORDER BY id DESC LIMIT 2000
                 """,
@@ -182,7 +192,8 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
     """Derive reject patterns from past decisions.
 
     Returns {"keywords": [...], "phrases": [...], "companies": [...],
-    "locations": [...], "n_good": int, "n_bad": int} -- empty lists when
+    "locations": [...], "desc_skills": [...],
+    "n_good": int, "n_bad": int} -- empty lists when
     there isn't enough signal.
 
     Skips are attributed to the most specific cause first: a BAD job whose
@@ -190,11 +201,19 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
     location, so its title/company words are EXCLUDED from title/company
     learning. Without this, skipping e.g. "Junior Developer (Cebu)" for
     location would wrongly teach the filter to ban "junior"/"developer".
+
+    `desc_skills` are canonical stack names (same lexicon as the resume
+    scorer) that overwhelmingly appear in rejected/skipped postings'
+    titles+descriptions -- this catches generic-titled postings
+    ("Associate Engineer" that is really a Salesforce role) without any
+    explicit note from you. Rows stored before descriptions were kept
+    contribute their titles only.
     """
     good = [d for d in decisions if d.get("status") in GOOD]
     bad = [d for d in decisions if d.get("status") in BAD]
     patterns: dict = {"keywords": [], "phrases": [], "companies": [],
-                      "locations": [], "n_good": len(good), "n_bad": len(bad)}
+                       "locations": [], "desc_skills": [],
+                       "n_good": len(good), "n_bad": len(bad)}
     if len(decisions) < fc["min_samples"]:
         return patterns
 
@@ -262,6 +281,26 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
             if n >= fc["min_company_hits"] and cbad[comp] / n >= fc["min_company_reject_rate"]:
                 patterns["companies"].append(comp)
         patterns["companies"].sort()
+
+    # Pass 3: stack skills in titles+descriptions. Same attribution as
+    # pass 2 (location-explained skips don't teach), same thresholds.
+    if fc.get("learn_desc_skills", True):
+        lex = _lexicon()
+        shits: Counter = Counter()
+        sbad: Counter = Counter()
+        for d in teachable:
+            text_low = f"{d.get('title') or ''}\n{d.get('description') or ''}".lower()
+            if not text_low.strip():
+                continue
+            for skill, aliases in lex.items():
+                if any(a in text_low for a in aliases):
+                    shits[skill] += 1
+                    if d.get("status") in BAD:
+                        sbad[skill] += 1
+        for skill, n in shits.items():
+            if n >= fc["min_hits"] and sbad[skill] / n >= fc["min_reject_rate"]:
+                patterns["desc_skills"].append(skill)
+        patterns["desc_skills"].sort()
     return patterns
 
 
@@ -320,18 +359,22 @@ def _dropped_row(row, reason: str) -> dict:
 
 
 def apply_heuristic(df, patterns: dict):
-    """Drop rows matching learned keywords/phrases/companies/locations.
+    """Drop rows matching learned keywords/phrases/companies/locations/skills.
     Returns (kept_df, n_dropped, reasons, dropped_df) where dropped_df
     carries a per-row `filter_reason` column for review persistence."""
     if df is None or getattr(df, "empty", True):
         return df, 0, [], df.head(0) if df is not None else df
     if not patterns["keywords"] and not patterns.get("phrases") \
-            and not patterns["companies"] and not patterns.get("locations"):
+            and not patterns["companies"] and not patterns.get("locations") \
+            and not patterns.get("desc_skills"):
         return df, 0, [], df.head(0)
     kw = set(patterns["keywords"])
     phrs = set(patterns.get("phrases", []))
     comps = set(patterns["companies"])
     locs = set(patterns.get("locations", []))
+    lex = _lexicon()
+    dskill_aliases = {s: lex.get(s, [s.lower()])
+                      for s in patterns.get("desc_skills", [])}
 
     def bad_row(row) -> str | None:
         loc_hit = sorted(set(loc_tokens(row.get("location", ""))) & locs)
@@ -348,6 +391,13 @@ def apply_heuristic(df, patterns: dict):
         comp = str(row.get("company", "") or "").strip().lower()
         if comp and comp in comps:
             return f"company:{comp}"
+        if dskill_aliases:
+            text_low = (f"{_cell(row.get('title'))} "
+                        f"{_cell(row.get('description'))}").lower()
+            shit = sorted(s for s, aliases in dskill_aliases.items()
+                          if any(a in text_low for a in aliases))
+            if shit:
+                return f"desc-skill:{','.join(shit)}"
         return None
 
     reasons = df.apply(bad_row, axis=1)
@@ -614,16 +664,27 @@ def _desc_snippet(value, limit: int) -> str:
     return s or "—"
 
 
+def _lexicon() -> dict:
+    """The canonical skill -> aliases map from tailor.py (lazy import:
+    tailor imports this module at top level, so a top-level import here
+    would cycle). Empty dict when unavailable -- callers skip skill
+    logic in that case."""
+    try:
+        from tailor import SKILL_LEXICON
+        return SKILL_LEXICON or {}
+    except Exception:
+        return {}
+
+
 def _resume_skill_line(max_skills: int = 25) -> str:
     """One-line resume context from the skill lexicon, so the filter can
     flag postings whose core stack has no overlap with the candidate."""
     try:
         import score as score_mod
-        from tailor import SKILL_LEXICON
         bank_low = score_mod.load_bank_text()
         if not bank_low:
             return ""
-        present = [s for s, aliases in SKILL_LEXICON.items()
+        present = [s for s, aliases in _lexicon().items()
                    if any(a in bank_low for a in aliases)]
         if not present:
             return ""
@@ -651,6 +712,9 @@ def _reject_hint_line(decisions: list[dict], fc: dict) -> str:
         if patterns.get("locations"):
             bits.append("reject locations: "
                         + ", ".join(patterns["locations"][:8]))
+        if patterns.get("desc_skills"):
+            bits.append("reject stacks: "
+                        + ", ".join(patterns["desc_skills"][:10]))
         if not bits:
             return ""
         return "Learned reject signals (" + " / ".join(bits) + ")."
@@ -894,12 +958,13 @@ def apply_feedback(df, cfg: dict, report: dict | None = None):
 
     patterns = learn_patterns(decisions, fc)
     if patterns["keywords"] or patterns.get("phrases") or patterns["companies"] \
-            or patterns.get("locations"):
+            or patterns.get("locations") or patterns.get("desc_skills"):
         print(f"[feedback] learned from {len(decisions)} decisions "
               f"({n_good} good / {n_bad} bad): "
               f"keywords={patterns['keywords']} phrases={patterns.get('phrases', [])} "
               f"companies={patterns['companies']} "
-              f"locations={patterns.get('locations', [])}")
+              f"locations={patterns.get('locations', [])} "
+              f"desc_skills={patterns.get('desc_skills', [])}")
     df, n_heur, heur_reasons, dropped_heur = apply_heuristic(df, patterns)
     if n_heur:
         print(f"[feedback] heuristic dropped {n_heur} postings matching reject patterns.")

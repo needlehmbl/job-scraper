@@ -70,12 +70,13 @@ def upsert_job(row: dict, conn=None) -> bool:
             cur.execute(
                 """
                 INSERT INTO jobs (source, title, company, url, location, date_posted, status,
-                                  score, score_reason)
+                                  score, score_reason, description)
                 VALUES (%(source)s, %(title)s, %(company)s, %(url)s, %(location)s,
                         %(date_posted)s, %(status)s,
-                        COALESCE(%(score)s, 0), COALESCE(%(score_reason)s, ''))
+                        COALESCE(%(score)s, 0), COALESCE(%(score_reason)s, ''),
+                        %(description)s)
                 """,
-                {**row, "url": url},
+                {**row, "url": url, "description": (row.get("description") or None)},
             )
             conn.commit()
         return True
@@ -115,6 +116,7 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score INT NOT NULL DEFAULT 0;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS score_reason TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ NOT NULL DEFAULT now();
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS follow_up_at DATE DEFAULT NULL;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS description TEXT DEFAULT NULL;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT NULL;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_salary TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_benefits TEXT NOT NULL DEFAULT '';

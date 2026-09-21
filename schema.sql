@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   url TEXT UNIQUE NOT NULL,       -- dedupe key, mirrors current normalized-URL logic
   location TEXT,
   date_posted DATE,
+  description TEXT DEFAULT NULL,   -- full posting text: feeds the learner's
+                                   -- desc-skill patterns (NULL for old rows)
   status TEXT NOT NULL DEFAULT 'NEW',  -- NEW/REVIEWED/APPLIED/SKIP/REJECTED/MISMATCH/EXP_GAP/EXPIRED/DUPLICATE
   scraped_at TIMESTAMPTZ NOT NULL DEFAULT now(),  -- first_seen
   last_seen TIMESTAMPTZ NOT NULL DEFAULT now(), -- last scrape that still listed it

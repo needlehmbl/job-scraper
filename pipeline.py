@@ -74,6 +74,9 @@ def _jrow(job, bank_low=None, _score_fn=None) -> dict:
         "location": _clean(job.get("location", "")),
         "date_posted": dpost,
         "status": "NEW",
+        # Stored for the learner's desc-skill patterns (capped: some
+        # boards return very long HTML-stripped text).
+        "description": _clean(job.get("description", ""))[:20000] or "",
     }
     try:
         import score as score_mod

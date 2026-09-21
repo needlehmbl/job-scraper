@@ -300,7 +300,12 @@ next scrape what to drop, via `feedback.py` (see `config.yaml` → `feedback:`).
   firm you always skip) are auto-excluded from new scrapes. `SKIP` counts
   exactly like `REJECTED` — a skip means "not relevant" — and so do the
   finer-grained `MISMATCH` (wrong fit) and `EXP_GAP` (needs more
-  experience). Thresholds
+  experience). You don't have to be explicit beyond the status: every
+  scraped posting's description is stored, and canonical stack skills
+  found in rejected/skipped postings (`learn_desc_skills`, default on)
+  are auto-excluded too — so a generic "Associate Engineer" title hiding
+  a C# description gets caught from your skips alone, and the learned
+  reason shows as `desc-skill:C#` in the Filtered tab. Thresholds
   (`min_hits`, `min_reject_rate`, `min_phrase_hits`, ...) are tunable;
   set `enabled: false` to turn off.
 - **Restoring teaches too:** a Restore puts the posting back as `NEW`,
