@@ -289,7 +289,7 @@ function InterviewRow({ job, terms, onStatus }) {
             {timeAgo(job.status_updated_at)}
           </span>
         </td>
-        <td className="px-4 py-3 text-right">
+        <td className="px-4 py-3 text-right sticky right-0 bg-white dark:bg-neutral-900">
           <button
             onClick={toggle}
             title="Show the status timeline for this application"
@@ -406,7 +406,7 @@ function OfferRow({ job, terms, onStatus, onChanged }) {
             className="w-32 rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800"
           />
         </td>
-        <td className="px-4 py-3 text-right">
+        <td className="px-4 py-3 text-right sticky right-0 bg-white dark:bg-neutral-900">
           <button
             onClick={() => setOpen((v) => !v)}
             title="Edit benefits, pros and cons"
@@ -1577,7 +1577,7 @@ export default function App() {
         )}
 
         {tab === 'jobs' && (
-        <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               Loading jobs…
@@ -1625,7 +1625,7 @@ export default function App() {
                     Follow-up
                   </th>
                   <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                  <th className="sticky right-0 bg-white px-4 py-3 text-right font-medium shadow-[-8px_0_12px_-8px_rgba(0,0,0,0.15)] dark:bg-neutral-900">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -1721,21 +1721,21 @@ export default function App() {
                         ))}
                       </select>
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="sticky right-0 bg-white px-4 py-3 text-right shadow-[-8px_0_12px_-8px_rgba(0,0,0,0.15)] dark:bg-neutral-900">
                       <div className="flex justify-end gap-2">
-                        <button
-                          onClick={() => openTailor(job)}
-                          title="Tailor your resume to this posting (preview + download, you still apply manually)"
-                          className="rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-950"
-                        >
-                          Tailor
-                        </button>
                         <button
                           onClick={() => handleApply(job)}
                           disabled={pendingApply === job.id}
                           className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
                         >
                           {pendingApply === job.id ? 'Opening…' : 'Apply'}
+                        </button>
+                        <button
+                          onClick={() => openTailor(job)}
+                          title="Tailor your resume to this posting (preview + download, you still apply manually)"
+                          className="rounded-lg border border-violet-300 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-950"
+                        >
+                          Tailor
                         </button>
                       </div>
                     </td>
@@ -1748,7 +1748,7 @@ export default function App() {
         )}
 
         {tab === 'filtered' && (
-        <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           {filteredNote && (
             <p className="border-b border-neutral-200 px-4 py-2 text-sm text-neutral-600 dark:border-neutral-800 dark:text-neutral-400" role="status">
               {filteredNote}
@@ -1773,7 +1773,7 @@ export default function App() {
                   <th className="px-4 py-3 font-medium">Posted</th>
                   <th className="px-4 py-3 font-medium">Filter reason</th>
                   <th className="px-4 py-3 font-medium">Filtered</th>
-                  <th className="px-4 py-3 text-right font-medium">Actions</th>
+                  <th className="sticky right-0 bg-white px-4 py-3 text-right font-medium shadow-[-8px_0_12px_-8px_rgba(0,0,0,0.15)] dark:bg-neutral-900">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -1836,7 +1836,7 @@ export default function App() {
                         {timeAgo(job.filtered_at)}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-right">
+                    <td className="sticky right-0 bg-white px-4 py-3 text-right shadow-[-8px_0_12px_-8px_rgba(0,0,0,0.15)] dark:bg-neutral-900">
                       <div className="flex justify-end gap-2">
                         <button
                           onClick={() => restoreFiltered(job)}
@@ -1864,7 +1864,7 @@ export default function App() {
         )}
 
         {tab === 'interviews' && (
-        <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               Loading interviews…
@@ -1882,7 +1882,7 @@ export default function App() {
                   <th className="px-4 py-3 font-medium">Company</th>
                   <th className="px-4 py-3 font-medium">Stage</th>
                   <th className="px-4 py-3 font-medium">Updated</th>
-                  <th className="px-4 py-3 text-right font-medium">Timeline</th>
+                  <th className="px-4 py-3 text-right font-medium sticky right-0 bg-neutral-50 dark:bg-neutral-800">Timeline</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
@@ -1896,7 +1896,7 @@ export default function App() {
         )}
 
         {tab === 'offers' && (
-        <section className="mt-6 overflow-hidden rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               Loading offers…
@@ -1914,7 +1914,7 @@ export default function App() {
                   <th className="px-4 py-3 font-medium">Company</th>
                   <th className="px-4 py-3 font-medium">Outcome</th>
                   <th className="px-4 py-3 font-medium">Salary</th>
-                  <th className="px-4 py-3 text-right font-medium">Details</th>
+                  <th className="px-4 py-3 text-right font-medium sticky right-0 bg-neutral-50 dark:bg-neutral-800">Details</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
