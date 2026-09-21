@@ -35,7 +35,21 @@ _TOKEN_PENALTY_CAP = 20
 
 _bank_cache: dict | None = None
 _bank_low_cache: str = ""
+_bank_mtime_cache: tuple | None = None
 _patterns_cache: dict | None = None
+
+
+def _bank_mtime() -> tuple:
+    """Mtimes of the bank sources, so a resume (re-)upload invalidates
+    the per-process cache without needing an API restart."""
+    import resumes
+    mtimes = []
+    for p in (resumes.INDEX_FILE, BANK_FALLBACK_PATH):
+        try:
+            mtimes.append(os.path.getmtime(p))
+        except OSError:
+            mtimes.append(0.0)
+    return tuple(mtimes)
 
 
 def _flatten_bank(bank: dict) -> str:
@@ -53,9 +67,11 @@ def _flatten_bank(bank: dict) -> str:
 
 
 def load_bank_text() -> str:
-    """Resume bank as one string (cached). Empty string when no bank found."""
-    global _bank_cache, _bank_low_cache
-    if _bank_cache is not None:
+    """Resume bank as one string (cached, invalidated on re-upload).
+    Empty string when no bank found."""
+    global _bank_cache, _bank_low_cache, _bank_mtime_cache
+    mtime = _bank_mtime()
+    if _bank_cache is not None and _bank_mtime_cache == mtime:
         return _bank_low_cache
     bank: dict = {}
     try:
@@ -73,6 +89,7 @@ def load_bank_text() -> str:
             bank = {}
     _bank_cache = bank
     _bank_low_cache = _flatten_bank(bank).lower()
+    _bank_mtime_cache = mtime
     return _bank_low_cache
 
 
@@ -188,22 +205,24 @@ def score_job(title: str, company: str, description: str = "",
 
 
 def reset_cache():
-    global _bank_cache, _bank_low_cache
-    _bank_cache, _bank_low_cache = None, ""
+    global _bank_cache, _bank_low_cache, _bank_mtime_cache
+    _bank_cache, _bank_low_cache, _bank_mtime_cache = None, "", None
 
 
-def rescore_stored(limit: int | None = None) -> int:
+def rescore_stored(limit: int | None = None, only_zero: bool = True) -> int:
     """Backfill score/score_reason for stored jobs (title-only: the jobs
-    table keeps no descriptions). Returns rows updated."""
+    table keeps no descriptions). Returns rows updated. Pass
+    only_zero=False to re-score everything (e.g. after a resume upload)."""
     import db
     bank_low = load_bank_text()
     patterns = load_patterns()
     conn = db.connect()
     try:
         with conn.cursor() as cur:
+            where = "WHERE score = 0 " if only_zero else ""
             cur.execute("SELECT id, title, company FROM jobs "
-                        + ("WHERE score = 0 ORDER BY id LIMIT %s"
-                           if limit else "WHERE score = 0 ORDER BY id"),
+                        + where + "ORDER BY id"
+                        + (" LIMIT %s" if limit else ""),
                         ((limit,) if limit else None) if limit else None)
             rows = cur.fetchall()
             n = 0
