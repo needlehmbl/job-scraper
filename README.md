@@ -1,7 +1,8 @@
 # Job Search Scraper + Dashboard
 
-Scrape pipeline + local web dashboard: scrapes Indeed, LinkedIn, Glassdoor,
-Google Jobs (via JobSpy) and JobStreet (via Playwright/Chromium) for
+Scrape pipeline + local web dashboard: scrapes Indeed, LinkedIn
+(via JobSpy) and JobStreet (via Playwright/Chromium), plus Greenhouse/Lever
+company boards (public JSON APIs), for
 junior/entry-level roles in Metro Manila, applies keyword +
 years-of-experience filters, dedupes, and stores new leads in **Postgres**.
 See [Job boards](#job-boards) for coverage notes and how to enable/disable
@@ -410,12 +411,21 @@ error nuked Indeed/LinkedIn results for every term). It builds a per-term
 only via that parameter. JobSpy supports `linkedin`, `indeed`,
 `glassdoor`, `google`, `zip_recruiter`, `bayt`, `naukri`, `bdjobs`.
 
-Coverage notes for a Metro Manila search:
+Coverage notes for a Metro Manila search (verified live 2026-09-21,
+jobspy 1.1.82):
 
-- `glassdoor`: **no JobSpy support for the Philippines at all** — skipped
-  automatically with a log line (keeping it in `site_names` is harmless).
+- `glassdoor`: **unwired on purpose, not a bug.** jobspy's country table
+  has no Philippines Glassdoor domain (hard exception), and bypassing via
+  the global domain still fails — every location lookup, US included,
+  hits Glassdoor's bot-wall (403 "Security" page). Fixing that needs
+  residential proxies/CAPTCHA solving, out of scope here. The scraper
+  logs one skip line per run; Glassdoor-listed employers with direct
+  APIs still arrive via `company_boards`.
 - `google`: global aggregator, sometimes finds PH SMBs Indeed misses, but
-  often returns zero rows when JobSpy's Google parser breaks.
+  currently returns **zero rows** (JobSpy's Google parser appears
+  broken upstream — the per-source warnings added to the scrape note
+  will flag `google: 0 rows` if that persists, same as any board whose
+  layout changes).
 - Skipped by default: `zip_recruiter` (US/CA only), `bayt` / `naukri` /
   `bdjobs` (Middle East / India / Bangladesh focus).
 

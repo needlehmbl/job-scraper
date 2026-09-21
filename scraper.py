@@ -140,22 +140,26 @@ def scrape(cfg: dict) -> pd.DataFrame:
     use_jobstreet = "jobstreet" in sites
     terms = s["search_terms"]
 
+    # Glassdoor is unwired on purpose (verified 2026-09-21, jobspy 1.1.82):
+    # its Country enum has no Philippines domain (hard exception), and even
+    # bypassed via the global www.glassdoor.com domain every location lookup
+    # -- PH and US alike -- hits Glassdoor's bot-wall (403 "Security" page
+    # on findPopularLocationAjax.htm, "location not parsed" downstream).
+    # Beating that needs residential proxies/CAPTCHA solving: out of scope
+    # for a local tool. Kept in site_names as intent; skipped once per run
+    # (not per term) so the log stays readable. Glassdoor-listed roles from
+    # employers with direct APIs still arrive via company_boards.
+    if "glassdoor" in jobspy_sites:
+        print("[scraper] glassdoor: skipped for this run (bot-wall, see comment). "
+              "Direct-board employers are still covered via company_boards.")
+        jobspy_sites = [x for x in jobspy_sites if x != "glassdoor"]
+
     for term in terms:
         if not jobspy_sites:
             break
         print(f"[scraper] searching: '{term}' in {s['location']}")
 
         for site in jobspy_sites:
-            # Glassdoor has no Philippines coverage in jobspy -- it raises
-            # for country_indeed="Philippines". Skip it up front so one
-            # unsupported board can't poison the other boards' results
-            # (a single combined scrape_jobs call fails wholesale when any
-            # one site raises, nuking Indeed/LinkedIn results too).
-            if site == "glassdoor" and s.get("country_indeed", "").lower() == "philippines":
-                print(f"[scraper] skipping glassdoor for '{term}' "
-                      f"(no Philippines coverage in jobspy)")
-                continue
-
             kwargs = dict(
                 site_name=[site],
                 search_term=term,

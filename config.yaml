@@ -47,11 +47,11 @@ search:
   # JobSpy boards (indeed/linkedin/glassdoor/google) + custom JobStreet
   # scraper. ZipRecruiter is US/CA-only; bayt/naukri/bdjobs are
   # Middle East/India/Bangladesh-focused -- all skipped for a
-  # Metro Manila search. Glassdoor PH coverage is thin and mirrors
-  # Indeed; Google Jobs is a global aggregator (expect cross-board
-  # overlap -- deduped by URL, see README). NOTE: jobspy has no Glassdoor
-  # support for the Philippines at all -- scraper.py skips it automatically
-  # (with a log line) so it can't break the other boards.
+  # Metro Manila search. Glassdoor is unwired on purpose (verified
+  # 2026-09-21: no PH domain in jobspy + global bot-wall on its location
+  # API -- needs residential proxies, out of scope); scraper.py logs one
+  # skip line per run. Google Jobs currently returns zero rows upstream
+  # (JobSpy parser broken) -- the scrape warnings flag it if so.
   site_names:
     - "indeed"
     - "linkedin"
