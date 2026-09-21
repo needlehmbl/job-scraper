@@ -24,7 +24,8 @@ const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google', 'gree
 // Hiring-funnel stages for APPLIED rows (separate axis from triage
 // status; a row carries a stage ⟺ its status is APPLIED).
 const STAGES = ['APPLIED', 'INITIAL', 'TECHNICAL', 'FINAL', 'OFFER', 'ACCEPTED', 'DECLINED', 'OUT']
-const INTERVIEW_STAGES = ['INITIAL', 'TECHNICAL', 'FINAL', 'OUT']
+const INTERVIEW_STAGES = ['INITIAL', 'TECHNICAL', 'FINAL']
+const IN_PROGRESS_STAGES = ['APPLIED', ...INTERVIEW_STAGES]
 const OFFER_STAGES = ['OFFER', 'ACCEPTED', 'DECLINED']
 
 const STAGE_LABELS = {
@@ -464,6 +465,7 @@ export default function App() {
   const [filteredJobs, setFilteredJobs] = useState([])
   const [scrapedDir, setScrapedDir] = useState(null) // null | 'desc' | 'asc'
   const [scoreDir, setScoreDir] = useState('desc') // null | 'desc' | 'asc' (default: best fit first)
+  const [postedDir, setPostedDir] = useState(null) // null | 'desc' | 'asc'
   const [dueOnly, setDueOnly] = useState(false)
   const [filteredNote, setFilteredNote] = useState('')
   const [restoring, setRestoring] = useState(null)
@@ -613,15 +615,17 @@ export default function App() {
     [filtered]
   )
 
-  const [appFilter, setAppFilter] = useState('all') // all | interviews | offers
+  const [appFilter, setAppFilter] = useState('all') // all | progress | offers | rejected
 
   const applicationRows = useMemo(
     () =>
       jobs
         .filter((job) => {
           if (job.status !== 'APPLIED') return false
-          if (appFilter === 'interviews' && !INTERVIEW_STAGES.includes(job.stage || '')) return false
-          if (appFilter === 'offers' && !OFFER_STAGES.includes(job.stage || '')) return false
+          const stage = job.stage || 'APPLIED'
+          if (appFilter === 'progress' && !IN_PROGRESS_STAGES.includes(stage)) return false
+          if (appFilter === 'offers' && !OFFER_STAGES.includes(stage)) return false
+          if (appFilter === 'rejected' && stage !== 'OUT') return false
           return matchesSearch(job, parsedSearch)
         })
         .sort((a, b) => new Date(b.status_updated_at || 0).getTime() - new Date(a.status_updated_at || 0).getTime()),
@@ -630,17 +634,30 @@ export default function App() {
 
   const appCounts = useMemo(() => {
     const applied = jobs.filter((job) => job.status === 'APPLIED')
+    const stageOf = (job) => job.stage || 'APPLIED'
     return {
       total: applied.length,
-      interviews: applied.filter((job) => INTERVIEW_STAGES.includes(job.stage || '')).length,
-      offers: applied.filter((job) => OFFER_STAGES.includes(job.stage || '')).length,
+      progress: applied.filter((job) => IN_PROGRESS_STAGES.includes(stageOf(job))).length,
+      offers: applied.filter((job) => OFFER_STAGES.includes(stageOf(job))).length,
+      rejected: applied.filter((job) => stageOf(job) === 'OUT').length,
     }
   }, [jobs])
 
   const sortedJobs = useMemo(() => {
-    // Explicit scraped-time sort wins when active; otherwise score-first
-    // (the API already returns score order, this keeps client-side
-    // filtering/sorting consistent).
+    // Only one sort wins at a time: explicit posted/scraped sorts take
+    // precedence; otherwise score-first (the API already returns score
+    // order, this keeps client-side filtering/sorting consistent).
+    if (postedDir) {
+      const dir = postedDir === 'asc' ? 1 : -1
+      const t = (j) => (j.date_posted ? new Date(j.date_posted).getTime() : null)
+      return [...jobsBase].sort((a, b) => {
+        const ta = t(a), tb = t(b)
+        if (ta === null && tb === null) return 0
+        if (ta === null) return 1
+        if (tb === null) return -1
+        return dir * (ta - tb)
+      })
+    }
     if (scrapedDir) {
       const dir = scrapedDir === 'asc' ? 1 : -1
       return [...jobsBase].sort(
@@ -655,18 +672,26 @@ export default function App() {
       (a, b) => dir * ((a.score ?? 0) - (b.score ?? 0)) ||
         (new Date(b.scraped_at || 0).getTime() - new Date(a.scraped_at || 0).getTime())
     )
-  }, [jobsBase, scrapedDir, scoreDir])
+  }, [jobsBase, postedDir, scrapedDir, scoreDir])
 
   const cycleScrapedSort = useCallback(() => {
     // Only one sort wins at a time.
     setScoreDir(null)
+    setPostedDir(null)
     setScrapedDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
   }, [])
 
   const cycleScoreSort = useCallback(() => {
-    // Activating score sort clears the scraped sort so only one wins.
+    // Activating score sort clears the other sorts so only one wins.
     setScrapedDir(null)
+    setPostedDir(null)
     setScoreDir((d) => (d === 'desc' ? 'asc' : d === 'asc' ? null : 'desc'))
+  }, [])
+
+  const cyclePostedSort = useCallback(() => {
+    setScrapedDir(null)
+    setScoreDir(null)
+    setPostedDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
   }, [])
 
   const updateJobs = useCallback(
@@ -1178,9 +1203,14 @@ export default function App() {
             accent="bg-neutral-300"
           />
           <StatCard
-            label="In interviews"
-            value={appCounts.interviews}
+            label="In progress"
+            value={appCounts.progress}
             accent="bg-sky-500"
+          />
+          <StatCard
+            label="Rejected"
+            value={appCounts.rejected}
+            accent="bg-neutral-400"
           />
           <StatCard
             label="Offers"
@@ -1609,7 +1639,15 @@ export default function App() {
                     </button>
                   </th>
                   <th className="px-4 py-3 font-medium">Source</th>
-                  <th className="px-4 py-3 font-medium">Posted</th>
+                  <th className="px-4 py-3 font-medium">
+                    <button
+                      onClick={cyclePostedSort}
+                      title="Sort by the employer's posting date (rows without a date stay last)"
+                      className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
+                    >
+                      Posted {postedDir === 'desc' ? '▼' : postedDir === 'asc' ? '▲' : '↕'}
+                    </button>
+                  </th>
                   <th className="px-4 py-3 font-medium">
                     <button
                       onClick={cycleScrapedSort}
@@ -1904,8 +1942,9 @@ export default function App() {
           <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
             {[
               ['all', `All (${appCounts.total})`],
-              ['interviews', `Interviews (${appCounts.interviews})`],
+              ['progress', `In progress (${appCounts.progress})`],
               ['offers', `Offers (${appCounts.offers})`],
+              ['rejected', `Rejected (${appCounts.rejected})`],
             ].map(([key, label]) => (
               <button
                 key={key}

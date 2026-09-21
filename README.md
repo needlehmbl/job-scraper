@@ -190,7 +190,7 @@ the top drop reasons from the feedback learner (see below).
   **Applications** tab, where a separate `stage` is tracked: `APPLIED →
   INITIAL → TECHNICAL → FINAL → OFFER` (or `OUT` when the employer cuts
   you, `ACCEPTED` / `DECLINED` when you accept or turn down an offer).
-  The tab has All / Interviews / Offers chips
+  The tab has All / In progress / Offers / Rejected chips (rejected = OUT
   plus its own filter; each row expands to a status+stage timeline (so you
   can see which round preceded a cut) and, for offer stages, salary /
   benefits / pros / cons notes for comparing offers.   `↩ Move back to
