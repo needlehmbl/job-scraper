@@ -166,6 +166,16 @@ feedback:
   ai_model: ""
   max_jobs_per_ai_call: 60
   max_examples_per_side: 30
+  # Description context per posting in the filter prompt (chars,
+  # whitespace-collapsed, ~4 chars/token). 1000 ≈ 250 tokens/posting.
+  ai_desc_chars: 1000
+  # Chunking: the batch is scored in chunks of this many postings (one
+  # LLM call each), up to ai_max_chunks_per_scrape chunks per scrape.
+  # The remainder is heuristic-only. Chunks fail over across providers
+  # (groq -> openrouter -> mistral -> gemini): if one chokes, the next
+  # picks the chunk up, so no single outage kills the run.
+  ai_jobs_per_call: 40
+  ai_max_chunks_per_scrape: 3
   # Rate limiter for AI scoring (protects free-tier quotas). At most one
   # scoring call happens per scrape, so these are daily guardrails tracked
   # in usage_state.json (gitignored, resets each day).

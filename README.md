@@ -312,13 +312,23 @@ next scrape what to drop, via `feedback.py` (see `config.yaml` → `feedback:`).
   (`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, or
   `GEMINI_API_KEY` — auto-picked in that order, or pin one with
   `ai_provider`), the new batch is checked against GOOD/BAD examples by
-  an LLM and matching postings are dropped. Any failure degrades to
+  an LLM and matching postings are dropped. Each posting is judged with
+  title + company + truncated description (`ai_desc_chars`, default
+  1000), plus your resume's skill list and the learned reject signals as
+  prompt context. Any failure degrades to
   heuristic-only; the learner never breaks a scrape.
-- **Cost:** at most **one AI call per scrape**, capped at
-  `max_jobs_per_ai_call` postings (default 60). Measured on real data, a
-  full call is ~1.8k input + ~0.5k output ≈ **~2.3k tokens/scrape**
-  worst case (fewer with small batches) — effectively $0 on the free
-  tiers (Groq / OpenRouter free models / Gemini Flash).
+- **Cost:** the batch is scored in chunks of `ai_jobs_per_call`
+  postings (default 40, one LLM call each), up to
+  `ai_max_chunks_per_scrape` chunks per scrape (default 3) — roughly
+  ~11k input tokens per call, ~22k for a typical two-chunk scrape.
+  Effectively $0 on the free tiers (Groq / OpenRouter free models /
+  Gemini Flash), and the daily caps below are the hard guardrail.
+- **Failover:** chunks try providers in preference order and fail over —
+  if one chokes (rate limit even after backoff, 5xx, dead model ID),
+  it's cooled for the rest of the run and the next provider picks the
+  chunk up, so no single outage kills the run. (Parallel calls would
+  spend shared rate-limit quota faster, not slower — sequential +
+  failover is the deliberate shape.)
 - **Rate limiter:** each scoring call is spaced by
   `min_seconds_between_calls` and counted against daily
   `max_ai_calls_per_day` / `max_ai_tokens_per_day` budgets tracked in

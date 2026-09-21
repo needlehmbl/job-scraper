@@ -25,10 +25,14 @@ Two layers, cheapest first:
    the filter to ban "developer".
 
 2. AI (only when an API key is present): sends a compact summary of past
-   GOOD vs BAD decisions plus the new batch to an LLM and drops whatever
+   GOOD vs BAD decisions plus the new batch -- title, company AND a
+   truncated description per posting, plus your resume's skill list and
+   the learned reject signals -- to an LLM and drops whatever
    the model flags as matching your reject patterns. Supports the keys
    already in `.env` -- GROQ, OpenRouter, Mistral, Gemini -- picked in
-   that order unless `feedback.ai_provider` pins one. Any failure (no DB,
+   that order unless `feedback.ai_provider` pins one. Providers fail
+   over: a choked provider is cooled for the run and the next in the
+   chain picks the chunk up. Any failure (no DB,
    no keys, API error, bad JSON) degrades gracefully to heuristic-only;
    this module NEVER raises into the scrape pipeline.
 """
@@ -71,6 +75,14 @@ _DEFAULTS = {
     "ai_model": "",
     "max_jobs_per_ai_call": 60,
     "max_examples_per_side": 30,
+    # Description context per posting in the AI filter prompt (chars,
+    # whitespace-collapsed). ~1000 chars ≈ 250 tokens.
+    "ai_desc_chars": 1000,
+    # Batch chunking: the filter scores the batch in chunks of this many
+    # postings (one LLM call each), up to ai_max_chunks_per_scrape chunks
+    # per scrape -- the remainder is heuristic-only (auto-KEEP).
+    "ai_jobs_per_call": 40,
+    "ai_max_chunks_per_scrape": 3,
     # Rate limiter for AI scoring (protects free-tier quotas). At most one
     # scoring call happens per scrape, so these are daily guardrails.
     "min_seconds_between_calls": 2,
@@ -365,14 +377,53 @@ _PROVIDER_ORDER = (
 )
 
 
-def _pick_provider(fc: dict, keys: dict) -> tuple | None:
+def _pick_providers(fc: dict, keys: dict) -> list[tuple]:
+    """All usable providers in preference order -- the failover chain.
+
+    When one provider chokes (429 even after backoff, 5xx, timeout,
+    dead model ID), the caller moves to the next instead of failing.
+    """
     want = (fc["ai_provider"] or "auto").lower()
+    out = []
     for name, env, url, model in _PROVIDER_ORDER:
         if want not in ("auto", name):
             continue
         if env in keys:
-            return (name, keys[env], url, fc["ai_model"] or model)
-    return None
+            out.append((name, keys[env], url, fc["ai_model"] or model))
+    return out
+
+
+def _pick_provider(fc: dict, keys: dict) -> tuple | None:
+    chain = _pick_providers(fc, keys)
+    return chain[0] if chain else None
+
+
+def _chat_with_failover(providers: list[tuple], system: str, user: str,
+                        cooled: set) -> tuple[str, int | None, str, str]:
+    """One logical LLM call with cross-provider failover.
+
+    Tries each provider in preference order, skipping ones already
+    cooled-down this run. A provider that fails (rate limit, server
+    error, network, dead model) is cooled so later chunks in the same
+    run don't waste time on it. Returns (reply, tokens, name, model);
+    raises RuntimeError when every provider fails.
+    """
+    last_err = "no providers available"
+    for name, key, url, model in providers:
+        if name in cooled:
+            continue
+        try:
+            if name == "gemini":
+                reply, used = _chat_gemini(key, model, system, user)
+            else:
+                reply, used = _chat_openai_compatible(url, key, model,
+                                                      system, user)
+            return reply, used, name, model
+        except Exception as e:
+            cooled.add(name)
+            print(f"[feedback] provider {name} failed ({e}); failing over.")
+            last_err = f"{name}: {e}"
+    raise RuntimeError(f"all AI providers failed ({last_err})")
 
 
 def _chat_openai_compatible(url: str, key: str, model: str, system: str, user: str
@@ -552,14 +603,78 @@ def _record_usage(fc: dict, tokens_used: int) -> tuple[int, int]:
         return 0, 0
 
 
-def _build_scoring_prompt(decisions: list[dict], batch_titles: list[dict],
+def _desc_snippet(value, limit: int) -> str:
+    """Posting description collapsed to one line, truncated at a word
+    boundary. Empty/missing descriptions become an explicit placeholder
+    so the model tolerates short-snippet sources (JobStreet) gracefully."""
+    s = re.sub(r"\s+", " ", _cell(value)).strip()
+    limit = max(100, int(limit or 0))
+    if len(s) > limit:
+        s = s[:limit].rsplit(" ", 1)[0] + "…"
+    return s or "—"
+
+
+def _resume_skill_line(max_skills: int = 25) -> str:
+    """One-line resume context from the skill lexicon, so the filter can
+    flag postings whose core stack has no overlap with the candidate."""
+    try:
+        import score as score_mod
+        from tailor import SKILL_LEXICON
+        bank_low = score_mod.load_bank_text()
+        if not bank_low:
+            return ""
+        present = [s for s, aliases in SKILL_LEXICON.items()
+                   if any(a in bank_low for a in aliases)]
+        if not present:
+            return ""
+        return ("Candidate's current stack (from their resume): "
+                + ", ".join(present[:max_skills]) + ".")
+    except Exception:
+        return ""
+
+
+def _reject_hint_line(decisions: list[dict], fc: dict) -> str:
+    """Compact restatement of the learned heuristic patterns, so the AI
+    layer benefits from them instead of re-deriving them from examples."""
+    try:
+        patterns = learn_patterns(decisions, fc)
+        bits = []
+        if patterns.get("keywords"):
+            bits.append("reject titles containing: "
+                        + ", ".join(patterns["keywords"][:12]))
+        if patterns.get("phrases"):
+            bits.append("reject title phrases: "
+                        + ", ".join(patterns["phrases"][:8]))
+        if patterns.get("companies"):
+            bits.append("reject companies: "
+                        + ", ".join(patterns["companies"][:8]))
+        if patterns.get("locations"):
+            bits.append("reject locations: "
+                        + ", ".join(patterns["locations"][:8]))
+        if not bits:
+            return ""
+        return "Learned reject signals (" + " / ".join(bits) + ")."
+    except Exception:
+        return ""
+
+
+def _build_scoring_prompt(decisions: list[dict], batch_rows: list[dict],
                           fc: dict) -> tuple[str, str]:
-    """Build the (system, user) prompt for one AI scoring call."""
+    """Build the (system, user) prompt for one AI scoring call.
+
+    Each posting carries title + company + a truncated description, so
+    verdicts use stack/seniority evidence instead of title vibes."""
     good = [d for d in decisions if d.get("status") in GOOD][:fc["max_examples_per_side"]]
     bad = [d for d in decisions if d.get("status") in BAD][:fc["max_examples_per_side"]]
 
     def fmt(d):
         return f"[{d.get('status', '')}] {d.get('title', '')} @ {d.get('company', '')}".strip()[:130]
+
+    def fmt_row(i: int, r: dict) -> str:
+        title = _cell(r.get("title"))[:120]
+        company = _cell(r.get("company"))[:80]
+        desc = _desc_snippet(r.get("description"), fc["ai_desc_chars"])
+        return f"{i}: {title} @ {company}\n   {desc}"
 
     system = (
         "You filter job postings for a junior/entry-level software developer "
@@ -569,16 +684,19 @@ def _build_scoring_prompt(decisions: list[dict], batch_titles: list[dict],
         "it needs more experience -- treat all three with exactly "
         "the same weight as REJECTED. Flag new postings that resemble the BAD ones "
         "(wrong seniority, wrong role family, wrong field, companies they avoid). "
-        "When unsure, KEEP. Reply ONLY with a JSON "
+        "Use the description's stack and seniority evidence, not just the title. "
+        + _resume_skill_line() + " " + _reject_hint_line(decisions, fc)
+        + " When unsure, KEEP. Reply ONLY with a JSON "
         "array like [{\"i\": 0, \"decision\": \"KEEP\"}, {\"i\": 1, \"decision\": \"SKIP\"}]."
     )
-    lines = [f"{i}: {fmt(r)}" for i, r in enumerate(batch_titles)]
+    lines = [fmt_row(i, r) for i, r in enumerate(batch_rows)]
     user = (
         "GOOD examples (user applied/reviewed):\n"
         + "\n".join(f"- {fmt(d)}" for d in good[:20])
         + "\n\nBAD examples (user rejected/skipped):\n"
         + "\n".join(f"- {fmt(d)}" for d in bad[:30])
-        + "\n\nNEW postings to judge:\n" + "\n".join(lines)
+        + "\n\nNEW postings to judge (title @ company, then description):\n"
+        + "\n".join(lines)
     )
     return system, user
 
@@ -586,56 +704,94 @@ def _build_scoring_prompt(decisions: list[dict], batch_titles: list[dict],
 def ai_filter(df, decisions: list[dict], fc: dict, keys: dict):
     """Ask an LLM which new postings match your reject patterns.
 
-    Returns (kept_df, n_dropped, provider_name, dropped_df). Never raises.
+    The batch is scored in chunks (one LLM call per chunk, capped per
+    scrape), each with title + description evidence. Chunks fail over
+    across providers; a dead chunk is kept, never dropped. Returns
+    (kept_df, n_dropped, provider_names, dropped_df). Never raises.
     """
     if df is None or getattr(df, "empty", True):
         return df, 0, "", df.head(0) if df is not None else df
-    provider = _pick_provider(fc, keys)
-    if provider is None:
+    providers = _pick_providers(fc, keys)
+    if not providers:
         return df, 0, "", df.head(0)
-    name, key, url, model = provider
+    chain = "+".join(name for name, _, _, _ in providers)
 
     good = [d for d in decisions if d.get("status") in GOOD][:fc["max_examples_per_side"]]
     bad = [d for d in decisions if d.get("status") in BAD][:fc["max_examples_per_side"]]
     if not bad:
         return df, 0, "", df.head(0)
 
-    batch = df.head(fc["max_jobs_per_ai_call"])
-    system, user = _build_scoring_prompt(
-        decisions, batch[["title", "company"]].to_dict(orient="records"), fc)
+    per_call = max(1, int(fc["ai_jobs_per_call"] or fc["max_jobs_per_ai_call"] or 40))
+    max_chunks = max(1, int(fc["ai_max_chunks_per_scrape"] or 1))
+    cover = min(len(df), per_call * max_chunks)
+    if len(df) > cover:
+        print(f"[feedback] AI scoring covers {cover} of {len(df)} postings "
+              f"({max_chunks} chunk(s) x {per_call}); the rest is heuristic-only.")
+    work = df.head(cover)
+    chunks = [work.iloc[i:i + per_call] for i in range(0, len(work), per_call)]
 
-    est_in = estimate_tokens(system) + estimate_tokens(user)
-    ok, reason = _budget_allows(fc, est_in)
-    if not ok:
-        print(f"[feedback] AI scoring skipped ({reason}); heuristic-only.")
-        return df, 0, "", df.head(0)
-    print(f"[feedback] AI scoring ({name}/{model}): ~{est_in} in-tokens, "
-          f"{len(batch)} postings.")
-    _LIMITER.wait(float(fc["min_seconds_between_calls"] or 0))
-    try:
-        if name == "gemini":
-            reply, used = _chat_gemini(key, model, system, user)
-        else:
-            reply, used = _chat_openai_compatible(url, key, model, system, user)
+    has_desc = "description" in work.columns
+    cooled: set = set()
+    drop_labels: list = []
+    drop_from: dict = {}
+    used_models: list = []
+    for ci, batch in enumerate(chunks, 1):
+        rows = []
+        for _, r in batch.iterrows():
+            rows.append({
+                "title": r.get("title", ""),
+                "company": r.get("company", ""),
+                "description": r.get("description", "") if has_desc else "",
+            })
+        system, user = _build_scoring_prompt(decisions, rows, fc)
+
+        est_in = estimate_tokens(system) + estimate_tokens(user)
+        ok, reason = _budget_allows(fc, est_in)
+        if not ok:
+            print(f"[feedback] AI scoring stopped ({reason}); rest is heuristic-only.")
+            break
+        print(f"[feedback] AI scoring chunk {ci}/{len(chunks)} "
+              f"(~{est_in} in-tokens, {len(batch)} postings; chain: {chain}).")
+        _LIMITER.wait(float(fc["min_seconds_between_calls"] or 0))
+        try:
+            reply, used, name, model = _chat_with_failover(
+                providers, system, user, cooled)
+        except Exception as e:
+            print(f"[feedback] AI chunk {ci} failed ({e}); keeping it.")
+            continue
         verdicts = _parse_ai_decisions(reply, len(batch))
-    except Exception as e:
-        print(f"[feedback] AI filter ({name}) failed, heuristic-only: {e}")
-        return df, 0, "", df.head(0)
-    spent = used if used else est_in + estimate_tokens(reply)
-    calls, toks = _record_usage(fc, spent)
-    if calls:
-        print(f"[feedback] AI usage today: {calls} calls, {toks} tokens.")
-    if not verdicts:
-        print(f"[feedback] AI filter ({name}) returned no usable verdicts.")
-        return df, 0, "", df.head(0)
+        spent = used if used else est_in + estimate_tokens(reply)
+        calls, toks = _record_usage(fc, spent)
+        if calls:
+            print(f"[feedback] AI usage today: {calls} calls, {toks} tokens.")
+        if not verdicts:
+            print(f"[feedback] AI chunk {ci} ({name}) returned no usable verdicts.")
+            continue
+        used_models.append(f"{name}/{model}")
+        for i, v in verdicts.items():
+            if v == "SKIP":
+                label = batch.index[i]
+                drop_labels.append(label)
+                drop_from[label] = name
+        print(f"[feedback] AI chunk {ci} ({name}/{model}) skipped "
+              f"{sum(1 for v in verdicts.values() if v == 'SKIP')} "
+              f"of {len(batch)} postings.")
 
-    drop_idx = [batch.index[i] for i, v in verdicts.items() if v == "SKIP"]
-    dropped = df.loc[drop_idx].copy()
-    dropped["filter_reason"] = f"ai:{name}"
-    kept = df.drop(index=drop_idx).reset_index(drop=True)
-    print(f"[feedback] AI ({name}/{model}) skipped {len(drop_idx)} of {len(batch)} "
-          f"new postings based on past negative decisions.")
-    return kept, len(drop_idx), name, dropped.reset_index(drop=True)
+    seen, uniq_labels = set(), []
+    for label in drop_labels:
+        if label not in seen:
+            seen.add(label)
+            uniq_labels.append(label)
+    if not uniq_labels:
+        return df, 0, "", df.head(0)
+    dropped = df.loc[uniq_labels].copy()
+    dropped["filter_reason"] = [f"ai:{drop_from.get(ix, '?')}"
+                                for ix in dropped.index]
+    kept = df.drop(index=uniq_labels).reset_index(drop=True)
+    ai_names = "+".join(sorted({m.split("/")[0] for m in used_models}))
+    print(f"[feedback] AI ({ai_names}) skipped {len(uniq_labels)} of {cover} "
+          f"scored postings based on past negative decisions.")
+    return kept, len(uniq_labels), ai_names, dropped.reset_index(drop=True)
 
 
 def generate_text(system: str, user: str, cfg: dict,
@@ -645,8 +801,9 @@ def generate_text(system: str, user: str, cfg: dict,
 
     `usage_name` selects the tracked budget bucket: "feedback_ai" shares
     the scrape filter's caps, anything else (e.g. "tailor") gets the
-    tailor_* caps from the same config block. Never raises -- failures
-    come back as ("", "", reason).
+    tailor_* caps from the same config block. Providers fail over: if one
+    chokes, the next in the chain picks the call up. Never raises --
+    failures come back as ("", "", reason).
     """
     fc = _cfg(cfg)
     if not fc["use_ai"] or fc["ai_provider"] == "off":
@@ -655,10 +812,9 @@ def generate_text(system: str, user: str, cfg: dict,
         keys = _api_keys()
     except Exception:
         keys = {}
-    provider = _pick_provider(fc, keys)
-    if provider is None:
+    providers = _pick_providers(fc, keys)
+    if not providers:
         return "", "", "no AI API keys in .env"
-    name, key, url, model = provider
 
     if usage_name == "feedback_ai":
         max_calls, max_toks = fc["max_ai_calls_per_day"], fc["max_ai_tokens_per_day"]
@@ -670,12 +826,10 @@ def generate_text(system: str, user: str, cfg: dict,
         return "", "", reason
     _LIMITER.wait(float(fc["min_seconds_between_calls"] or 0))
     try:
-        if name == "gemini":
-            reply, used = _chat_gemini(key, model, system, user)
-        else:
-            reply, used = _chat_openai_compatible(url, key, model, system, user)
+        reply, used, name, model = _chat_with_failover(
+            providers, system, user, set())
     except Exception as e:
-        return "", "", f"{name} request failed: {e}"
+        return "", "", f"all providers failed: {e}"
     reply = (reply or "").strip()
     if not reply:
         # Reasoning models occasionally return an empty content field on
