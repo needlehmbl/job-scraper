@@ -727,7 +727,7 @@ export default function App() {
     [updateJobs, fetchAll]
   )
 
-    const handleApply = useCallback(    async (job) => {
+    const handleApply = useCallback(async (job) => {
       updateJobs(job.id, { status: 'REVIEWED' })
       setPendingApply(job.id)
       try {
