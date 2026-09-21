@@ -173,9 +173,11 @@ the top drop reasons from the feedback learner (see below).
    applied-vs-rejected-vs-skipped-vs-mismatch-vs-expgap graph and the scraper's feedback learner.
 - **Apply** button opens the job URL in a new tab of your existing browser
   (`window.open`) and persists the row as `REVIEWED` (so the change survives
-  a tab reload). Flip it to `APPLIED` manually after you've finished the
-  application (apply_helper never files anything for you — some ATS
-  platforms detect automation).
+  a tab reload). A confirm strip then appears under the row: **Yes,
+  applied ✓** moves it to the Applications tab, or pick a no-apply reason
+  (`SKIP` / `EXP_GAP` / `MISMATCH` / `EXPIRED`) — so `APPLIED` always
+  means you really submitted. (`apply_helper` never files anything for
+  you — some ATS platforms detect automation.)
 - **Bulk editing:** tick the checkboxes (header box selects all filtered
   rows) and a bulk bar appears — pick a status once, apply it to the whole
   batch. Useful for triaging a fresh scrape.
@@ -185,10 +187,13 @@ the top drop reasons from the feedback learner (see below).
   / `DECLINED` for outcomes). The tab has All / Interviews / Offers chips
   plus its own filter; each row expands to a status+stage timeline (so you
   can see which round preceded a cut) and, for offer stages, salary /
-  benefits / pros / cons notes for comparing offers. `↩ Move back to
+  benefits / pros / cons notes for comparing offers.   `↩ Move back to
   Jobs` sends a row back to triage as `REVIEWED`. Triage `status` and
-  pipeline `stage` are separate axes — the status dropdown stays at 9
-  values, and stages never train the feedback learner (interview outcomes
+  pipeline `stage` are separate axes — the Jobs status dropdown stays at 7
+  values (`APPLIED` is reachable only through the post-Apply confirm, and
+  `REJECTED` only through the **Mark rejected** button in application
+  Details, so `REJECTED` always means a real application failed), and stages
+  never train the feedback learner (interview outcomes
   say how the process went, not whether the role was relevant).
 - **Theme:** neutral black/gray chrome in light mode, full dark mode via
   the sun/moon button in the header (follows your OS preference on first

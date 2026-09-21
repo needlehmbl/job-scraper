@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import {
   CartesianGrid,
   Legend,
@@ -13,7 +13,12 @@ import { defaultKeeper, findDuplicateGroups } from './duplicates.js'
 
 const API = 'http://127.0.0.1:8000'
 
-const STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
+const STATUSES = ['NEW', 'REVIEWED', 'SKIP', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
+// Full triage list for the filter dropdown (APPLIED rows live in the
+// Applications tab; REJECTED is set only from there).
+const ALL_STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'REJECTED', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
+// "No, I didn't apply" reasons offered in the post-Apply confirm strip.
+const NO_APPLY_REASONS = ['SKIP', 'EXP_GAP', 'MISMATCH', 'EXPIRED']
 const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google', 'greenhouse', 'lever']
 
 // Hiring-funnel stages for APPLIED rows (separate axis from triage
@@ -232,7 +237,7 @@ function useDarkMode() {
   return [dark, setDark]
 }
 
-function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged }) {
+function ApplicationRow({ job, terms, onStage, onStatus, onMoveBack, onChanged }) {
   const [open, setOpen] = useState(false)
   const [history, setHistory] = useState(null)
   const [salary, setSalary] = useState(job.offer_salary || '')
@@ -419,13 +424,20 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged }) {
                 </div>
               </div>
             )}
-            <div className="mt-3 border-t border-neutral-200 pt-2 dark:border-neutral-700">
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-neutral-200 pt-2 dark:border-neutral-700">
               <button
                 onClick={() => onMoveBack(job)}
                 title="Send back to the Jobs tab as REVIEWED (clears the stage)"
                 className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
                 ↩ Move back to Jobs
+              </button>
+              <button
+                onClick={() => onStatus(job, 'REJECTED')}
+                title="They said no — moves to Jobs as REJECTED (clears the stage)"
+                className="rounded-lg border border-rose-300 px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 dark:border-rose-700 dark:text-rose-400 dark:hover:bg-rose-950"
+              >
+                Mark rejected
               </button>
             </div>
           </td>
@@ -452,6 +464,7 @@ export default function App() {
   const [bulkStatus, setBulkStatus] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
   const [pendingApply, setPendingApply] = useState(null)
+  const [confirmApplyId, setConfirmApplyId] = useState(null)
   const [scraping, setScraping] = useState(false)
   const [scrapeNote, setScrapeNote] = useState('')
   const [tab, setTab] = useState('jobs')
@@ -673,6 +686,7 @@ export default function App() {
   const changeStatus = useCallback(
     async (job, nextStatus) => {
       updateJobs(job.id, { status: nextStatus })
+      if (confirmApplyId === job.id) setConfirmApplyId(null)
       try {
         await fetch(`${API}/jobs/${job.id}`, {
           method: 'PATCH',
@@ -685,7 +699,7 @@ export default function App() {
         fetchAll()
       }
     },
-    [updateJobs, fetchAll]
+    [updateJobs, fetchAll, confirmApplyId]
   )
 
   const setFollowup = useCallback(
@@ -750,6 +764,8 @@ export default function App() {
         console.error('apply status persist failed:', e)
       }
       setPendingApply(null)
+      // Ask what actually happened: confirm the application, or file why not.
+      setConfirmApplyId(job.id)
     },
     [updateJobs]
   )
@@ -1457,7 +1473,7 @@ export default function App() {
             className="rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
           >
             <option value="">All statuses</option>
-            {STATUSES.map((s) => (
+            {ALL_STATUSES.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -1624,7 +1640,8 @@ export default function App() {
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {sortedJobs.map((job) => (
-                  <tr key={job.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                  <Fragment key={job.id}>
+                  <tr className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
                     <td className="px-4 py-3">
                       <input
                         type="checkbox"
@@ -1734,6 +1751,43 @@ export default function App() {
                       </div>
                     </td>
                   </tr>
+                  {confirmApplyId === job.id && (
+                    <tr className="bg-emerald-50 dark:bg-emerald-950/40">
+                      <td colSpan={10} className="px-4 py-2.5">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-medium text-neutral-700 dark:text-neutral-200">
+                            Did you submit the application for “{job.title || 'Untitled'}”?
+                          </span>
+                          <button
+                            onClick={() => changeStatus(job, 'APPLIED')}
+                            title="Yes — move to the Applications tab"
+                            className="rounded-lg bg-emerald-600 px-3 py-1.5 font-medium text-white hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                          >
+                            Yes, applied ✓
+                          </button>
+                          <span className="text-neutral-400 dark:text-neutral-500">No —</span>
+                          {NO_APPLY_REASONS.map((r) => (
+                            <button
+                              key={r}
+                              onClick={() => changeStatus(job, r)}
+                              title={`Mark ${r} instead`}
+                              className="rounded-lg border border-neutral-300 px-2.5 py-1.5 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                            >
+                              {r}
+                            </button>
+                          ))}
+                          <button
+                            onClick={() => setConfirmApplyId(null)}
+                            title="Dismiss (stays REVIEWED)"
+                            className="ml-auto rounded px-2 py-1 text-neutral-400 hover:bg-neutral-200 dark:text-neutral-500 dark:hover:bg-neutral-800"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -1908,7 +1962,7 @@ export default function App() {
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {applicationRows.map((job) => (
                   <ApplicationRow key={job.id} job={job} terms={parsedSearch.terms}
-                    onStage={setStage} onMoveBack={moveBackToJobs} onChanged={fetchAll} />
+                    onStage={setStage} onStatus={changeStatus} onMoveBack={moveBackToJobs} onChanged={fetchAll} />
                 ))}
               </tbody>
             </table>
