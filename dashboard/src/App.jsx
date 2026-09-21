@@ -311,7 +311,9 @@ function ApplicationRow({ job, terms, onStage, onStatus, onMoveBack, onChanged }
           </a>
           {stage === 'OUT' && outAfter && (
             <span className="block text-xs text-neutral-400 dark:text-neutral-500">
-              out after {STAGE_LABELS[outAfter] || outAfter}
+              {outAfter === 'APPLIED'
+                ? 'rejected at application stage — no interview'
+                : `out after ${STAGE_LABELS[outAfter] || outAfter}`}
             </span>
           )}
           {stage === 'ACCEPTED' && (
