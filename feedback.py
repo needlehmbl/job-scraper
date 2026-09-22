@@ -196,6 +196,20 @@ def loc_tokens(text: str) -> list[str]:
     return toks
 
 
+def _is_ncr_location(location) -> bool:
+    """True when the posting is inside Metro Manila (NCR-blind learner).
+
+    Location-pattern learning and location-based dropping only apply to
+    postings EXPLICITLY outside the NCR (e.g. Cebu) -- an NCR posting you
+    skipped for EXP_GAP/MISMATCH must teach exp/mismatch, never location.
+    """
+    try:
+        from locations import is_metro_manila
+        return bool(is_metro_manila(location))
+    except Exception:
+        return False
+
+
 def learn_patterns(decisions: list[dict], fc: dict) -> dict:
     """Derive reject patterns from past decisions.
 
@@ -229,6 +243,10 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
     lhits: Counter = Counter()
     lbad: Counter = Counter()
     for d in decisions:
+        # NCR-blind: postings inside Metro Manila never teach location
+        # patterns (their skips belong to exp/mismatch/title learning).
+        if _is_ncr_location(d.get("location", "")):
+            continue
         toks = set(loc_tokens(d.get("location", "")))
         for t in toks:
             lhits[t] += 1
@@ -385,9 +403,13 @@ def apply_heuristic(df, patterns: dict):
                       for s in patterns.get("desc_skills", [])}
 
     def bad_row(row) -> str | None:
-        loc_hit = sorted(set(loc_tokens(row.get("location", ""))) & locs)
-        if loc_hit:
-            return f"location:{','.join(loc_hit)}"
+        # NCR-blind: a posting inside Metro Manila is never dropped for
+        # location, even when an older learned pattern still names its
+        # token (e.g. location:quezon learned before this guard existed).
+        if not _is_ncr_location(row.get("location", "")):
+            loc_hit = sorted(set(loc_tokens(row.get("location", ""))) & locs)
+            if loc_hit:
+                return f"location:{','.join(loc_hit)}"
         nt = norm_title(row.get("title", ""))
         title_toks = set(nt.split())
         hit = sorted(title_toks & kw)

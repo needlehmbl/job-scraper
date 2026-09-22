@@ -36,6 +36,8 @@ _PATTERNS = [
     r"\bsan\s+juan\b",
     r"pateros",
     r"\bortigas\b",               # Pasig / Mandaluyong
+    r"\beastwood\b",               # Eastwood City, Libis (Quezon City)
+    r"\bnovaliches\b",             # Novaliches (Quezon City)
     r"\balabang\b",               # Muntinlupa
     r"\bbinondo\b",               # Manila
     r"\bbgc\b",                   # Bonifacio Global City, Taguig

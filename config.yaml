@@ -57,7 +57,9 @@ search:
     - "linkedin"
     - "jobstreet"
     - "glassdoor"
-    - "google"
+    # NOTE: "google" disabled -- JobSpy's Google parser returns 0 rows
+    # upstream (broken), so listing it only burns 16 searches per run.
+    # Re-enable when the parser is fixed.
 
   # How far back to look
   hours_old: 672

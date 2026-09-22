@@ -314,9 +314,13 @@ process went, not whether the role was relevant).
   found in rejected/skipped postings (`learn_desc_skills`, default on)
   are auto-excluded too — so a generic "Associate Engineer" title hiding
   a C# description gets caught from your skips alone, and the learned
-  reason shows as `desc-skill:C#` in the Filtered tab. Thresholds
-  (`min_hits`, `min_reject_rate`, `min_phrase_hits`, ...) are tunable;
-  set `enabled: false` to turn off.
+   reason shows as `desc-skill:C#` in the Filtered tab. Thresholds
+   (`min_hits`, `min_reject_rate`, `min_phrase_hits`, ...) are tunable;
+   set `enabled: false` to turn off.
+- **Location learning is NCR-blind:** only postings *outside* Metro Manila
+  (e.g. Cebu) teach location patterns. Skipping a Quezon City posting for
+  `EXP_GAP`/`MISMATCH` teaches experience/fit, never location — so the
+  learner can't ban the whole metro you search in.
 - **Restoring teaches too:** a Restore puts the posting back as `NEW`,
   which the learner ignores — so after restoring, mark it
   `REVIEWED`/`APPLIED` in Jobs. Those GOOD examples dilute the reject rate
@@ -408,13 +412,18 @@ sites change something.
 ## Job boards
 
 Current default (`config.yaml` → `search.site_names`): `indeed`,
-`linkedin`, `google` (JobSpy), plus `jobstreet` and `glassdoor` (custom
+`linkedin` (JobSpy), plus `jobstreet` and `glassdoor` (custom
 Playwright scrapers in `jobstreet.py` / `glassdoor.py`, since JobSpy has
 no JobStreet provider and its Glassdoor integration is bot-walled).
+`google` is disabled by default — JobSpy's Google parser currently
+returns zero rows upstream (see below); re-enable it if that gets fixed.
 
-Adding/removing boards is a one-line config change. `scraper.py` runs one
-JobSpy call **per site per term**, so a single failing board can't poison
-the others. It builds a per-term
+Adding/removing boards is a one-line config change. `scraper.py` fetches
+all sources **concurrently** (one thread each: JobSpy sites searched in
+parallel, plus JobStreet, Glassdoor/Playwright, and Greenhouse/Lever
+boards), then merges and filters — so a single failing board can't
+poison the others and the slowest source sets the pace instead of the
+sum. It builds a per-term
 `google_search_term` when `google` is enabled, since Google Jobs filters
 only via that parameter. JobSpy supports `linkedin`, `indeed`,
 `glassdoor`, `google`, `zip_recruiter`, `bayt`, `naukri`, `bdjobs`.
@@ -433,9 +442,10 @@ jobspy 1.1.82):
   `hours_old` gate like company boards, and all other filters apply.
 - `google`: global aggregator, sometimes finds PH SMBs Indeed misses, but
   currently returns **zero rows** (JobSpy's Google parser appears
-  broken upstream — the per-source warnings added to the scrape note
-  will flag `google: 0 rows` if that persists, same as any board whose
-  layout changes).
+  broken upstream) so it is **disabled in the default config** — listing
+  it only burns searches. Re-enable when the parser is fixed; the
+  per-source warnings in the scrape note will flag `google: 0 rows`
+  if it regresses again.
 - Skipped by default: `zip_recruiter` (US/CA only), `bayt` / `naukri` /
   `bdjobs` (Middle East / India / Bangladesh focus).
 

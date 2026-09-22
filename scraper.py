@@ -11,6 +11,8 @@ frames in.
 """
 import re
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import yaml
 import pandas as pd
 from jobspy import scrape_jobs
@@ -124,6 +126,173 @@ def normalize_url(url) -> str:
     return url.strip().lower().rstrip("/")
 
 
+# Concurrency: every source is I/O-bound (HTTP / browser waits), so the
+# term x site searches and the four source blocks run in threads. Filters
+# are untouched -- this only overlaps waiting, never skips work.
+_JOBSPY_WORKERS = 6
+_SOURCE_WORKERS = 4
+
+
+def _jobspy_kwargs(s: dict, site: str, term: str) -> dict:
+    kwargs = dict(
+        site_name=[site],
+        search_term=term,
+        location=s["location"],
+        results_wanted=s.get("results_wanted", 50),
+        country_indeed=s.get("country_indeed", "Philippines"),  # required by Indeed/Glassdoor
+        linkedin_fetch_description=s.get("linkedin_fetch_description", True),
+    )
+
+    # Google Jobs ignores search_term/location and filters only via
+    # google_search_term -- build one per search term so enabling
+    # "google" in site_names actually scopes results.
+    if site == "google":
+        kwargs["google_search_term"] = (
+            f"{term} jobs in {s['location']}"
+        )
+
+    # jobspy's Indeed integration rejects combining is_remote with
+    # hours_old in one call (400 error) -- only pass is_remote through
+    # when it's actually True (a remote-only search). For onsite/hybrid
+    # searches (is_remote: false), we skip it entirely and rely on
+    # hours_old + the post-scrape filters instead.
+    if s.get("is_remote", False):
+        kwargs["is_remote"] = True
+    else:
+        kwargs["hours_old"] = s.get("hours_old", 72)
+    return kwargs
+
+
+def _jobspy_one(site: str, term: str, kwargs: dict):
+    """One jobspy call in a worker thread. Returns (df_or_None, error_str)."""
+    try:
+        df = scrape_jobs(**kwargs)
+    except Exception as e:
+        return None, f"{term}: {e}"
+    if df is not None and not df.empty:
+        df = df.copy()
+        df["matched_search_term"] = term
+        return df, ""
+    return None, ""
+
+
+def _run_jobspy_block(s: dict, terms: list, jobspy_sites: list):
+    """All jobspy term x site searches, concurrently.
+
+    Returns (frames, notes) with frames in the original term-major order
+    so within-run dedupe keeps the same winner as the sequential run.
+    notes are (source, rows, error) triples for the caller's note().
+    """
+    for term in terms:
+        print(f"[scraper] searching: '{term}' in {s['location']}")
+    tasks = [(ti, si, site, term)
+             for ti, term in enumerate(terms)
+             for si, site in enumerate(jobspy_sites)]
+    if not tasks:
+        return [], []
+    results: dict = {}
+    with ThreadPoolExecutor(max_workers=min(_JOBSPY_WORKERS, len(tasks))) as pool:
+        futs = {pool.submit(
+            _jobspy_one, site, term, _jobspy_kwargs(s, site, term)): (ti, si, site, term)
+            for ti, si, site, term in tasks}
+        for f in as_completed(futs):
+            ti, si, site, term = futs[f]
+            try:
+                df, err = f.result()
+            except Exception as e:  # never lose a search to a worker crash
+                df, err = None, f"{term}: {e}"
+            results[(ti, si)] = (df, err)
+    frames, notes = [], []
+    for ti, term in enumerate(terms):
+        for si, site in enumerate(jobspy_sites):
+            df, err = results[(ti, si)]
+            if df is not None:
+                frames.append(df)
+                notes.append((site, len(df), ""))
+            elif err:
+                print(f"[scraper] WARNING: '{site}' search for '{term}' failed: {err}")
+                notes.append((site, 0, err))
+            else:
+                print(f"[scraper] '{site}' returned no results for '{term}'")
+                notes.append((site, 0, ""))
+    return frames, notes
+
+
+def _run_jobstreet_block(s: dict, terms: list):
+    """JobStreet browser block in a worker thread. Returns (frames, notes)."""
+    try:
+        js_df = jobstreet.scrape_jobstreet(
+            terms,
+            s["location"],
+            max_results=s.get("results_wanted", 50),
+            hours_old=s.get("hours_old"),
+        )
+    except Exception as e:
+        print(f"[scraper] WARNING: jobstreet scrape failed: {e}")
+        if "Executable doesn't exist" in str(e):
+            print("[scraper] HINT: Playwright's browser build is missing -- run "
+                  "'venv/bin/python -m playwright install chromium' to fix.")
+        return [], [("jobstreet", 0, str(e))]
+    if js_df is not None and not js_df.empty:
+        return [js_df], [("jobstreet", len(js_df), "")]
+    return [], [("jobstreet", 0, "")]
+
+
+def _run_glassdoor_block(cfg: dict, s: dict, terms: list):
+    """Glassdoor browser block in a worker thread. Returns (frames, notes)."""
+    try:
+        g_df, g_stats = glassdoor.scrape_glassdoor(
+            terms,
+            (cfg.get("glassdoor_locations")
+             or [{"slug": "Makati City", "id": 4778930}]),
+            max_results=s.get("results_wanted", 50),
+        )
+    except Exception as e:
+        print(f"[scraper] WARNING: glassdoor scrape failed: {e}")
+        if "Executable doesn't exist" in str(e):
+            print("[scraper] HINT: Playwright's browser build is missing -- run "
+                  "'venv/bin/python -m playwright install chromium' to fix.")
+        return [], [("glassdoor", 0, str(e))]
+    frames = [g_df] if g_df is not None and not g_df.empty else []
+    notes = [("glassdoor", n, "") for _, n in (g_stats or {}).items()]
+    if g_df is not None and g_df.empty and not g_stats:
+        notes.append(("glassdoor", 0, ""))
+    return frames, notes
+
+
+def _run_boards_block(cfg: dict, s: dict):
+    """Greenhouse/Lever board pulls. Returns (frames, notes)."""
+    frames, notes = [], []
+    for mod, label in ((greenhouse, "greenhouse"), (lever, "lever")):
+        slugs = (cfg.get("company_boards") or {}).get(label, [])
+        if not slugs:
+            continue
+        try:
+            if label == "greenhouse":
+                b_df = mod.scrape_greenhouse(
+                    slugs,
+                    max_results=s.get("results_wanted", 50),
+                    hours_old=None,
+                )
+            else:
+                b_df = mod.scrape_lever(
+                    slugs,
+                    max_results=s.get("results_wanted", 50),
+                    hours_old=None,
+                )
+        except Exception as e:
+            print(f"[scraper] WARNING: {label} boards scrape failed: {e}")
+            notes.append((label, 0, str(e)))
+            continue
+        if b_df is not None and not b_df.empty:
+            b_df["_loose_location"] = True
+            frames.append(b_df)
+            notes.append((label, len(b_df), ""))
+        elif b_df is not None:
+            notes.append((label, 0, ""))
+    return frames, notes
+
+
 def scrape(cfg: dict) -> pd.DataFrame:
     s = cfg["search"]
     all_frames = []
@@ -145,135 +314,28 @@ def scrape(cfg: dict) -> pd.DataFrame:
     use_glassdoor = "glassdoor" in sites
     terms = s["search_terms"]
 
-    for term in terms:
-        if not jobspy_sites:
-            break
-        print(f"[scraper] searching: '{term}' in {s['location']}")
-
-        for site in jobspy_sites:
-            kwargs = dict(
-                site_name=[site],
-                search_term=term,
-                location=s["location"],
-                results_wanted=s.get("results_wanted", 50),
-                country_indeed=s.get("country_indeed", "Philippines"),  # required by Indeed/Glassdoor
-                linkedin_fetch_description=s.get("linkedin_fetch_description", True),
-            )
-
-            # Google Jobs ignores search_term/location and filters only via
-            # google_search_term -- build one per search term so enabling
-            # "google" in site_names actually scopes results.
-            if site == "google":
-                kwargs["google_search_term"] = (
-                    f"{term} jobs in {s['location']}"
-                )
-
-            # jobspy's Indeed integration rejects combining is_remote with
-            # hours_old in one call (400 error) -- only pass is_remote through
-            # when it's actually True (a remote-only search). For onsite/hybrid
-            # searches (is_remote: false), we skip it entirely and rely on
-            # hours_old + the post-scrape filters instead.
-            if s.get("is_remote", False):
-                kwargs["is_remote"] = True
-            else:
-                kwargs["hours_old"] = s.get("hours_old", 72)
-
-            try:
-                df = scrape_jobs(**kwargs)
-            except Exception as e:
-                print(f"[scraper] WARNING: '{site}' search for '{term}' failed: {e}")
-                note(site, error=f"{term}: {e}")
-                continue
-            if df is not None and not df.empty:
-                df["matched_search_term"] = term
-                all_frames.append(df)
-                note(site, rows=len(df))
-            else:
-                print(f"[scraper] '{site}' returned no results for '{term}'")
-                note(site)
-
-    if use_jobstreet:
-        try:
-            js_df = jobstreet.scrape_jobstreet(
-                terms,
-                s["location"],
-                max_results=s.get("results_wanted", 50),
-                hours_old=s.get("hours_old"),
-            )
-        except Exception as e:
-            print(f"[scraper] WARNING: jobstreet scrape failed: {e}")
-            if "Executable doesn't exist" in str(e):
-                print("[scraper] HINT: Playwright's browser build is missing -- run "
-                      "'venv/bin/python -m playwright install chromium' to fix.")
-            note("jobstreet", error=str(e))
-            js_df = None
-        if js_df is not None and not js_df.empty:
-            all_frames.append(js_df)
-            note("jobstreet", rows=len(js_df))
-        elif js_df is not None:
-            note("jobstreet")
-
-    # Glassdoor via headless Chromium (glassdoor.py): jobspy's Glassdoor
-    # integration is bot-walled (see module docstring). Locations come from
-    # top-level `glassdoor_locations:` as {slug, id} pairs -- the ID is NOT
-    # resolvable programmatically (the autocomplete endpoint is the walled
-    # one), so copy the IC number out of any browser Glassdoor search URL
-    # for each city you want.
-    if use_glassdoor:
-        try:
-            g_df, g_stats = glassdoor.scrape_glassdoor(
-                terms,
-                (cfg.get("glassdoor_locations")
-                 or [{"slug": "Makati City", "id": 4778930}]),
-                max_results=s.get("results_wanted", 50),
-            )
-        except Exception as e:
-            print(f"[scraper] WARNING: glassdoor scrape failed: {e}")
-            if "Executable doesn't exist" in str(e):
-                print("[scraper] HINT: Playwright's browser build is missing -- run "
-                      "'venv/bin/python -m playwright install chromium' to fix.")
-            note("glassdoor", error=str(e))
-            g_df, g_stats = None, {}
-        if g_df is not None and not g_df.empty:
-            all_frames.append(g_df)
-        for label, n in (g_stats or {}).items():
-            note("glassdoor", rows=n)
-        if g_df is not None and g_df.empty and not g_stats:
-            note("glassdoor")
-
-    # Direct company boards (Greenhouse/Lever JSON APIs, no browser needed).
-    # Slugs live in top-level `company_boards:` (list or {slug: name});
-    # one failing board must never poison the others. Boards ignore
-    # `hours_old` on purpose: career pages list evergreen postings that are
-    # rarely re-touched, so an hours cutoff would zero them out -- dedupe
-    # against `jobs` keeps re-scrapes from re-adding them.
-    for mod, label in ((greenhouse, "greenhouse"), (lever, "lever")):
-        slugs = (cfg.get("company_boards") or {}).get(label, [])
-        if not slugs:
-            continue
-        try:
-            if label == "greenhouse":
-                b_df = mod.scrape_greenhouse(
-                    slugs,
-                    max_results=s.get("results_wanted", 50),
-                    hours_old=None,
-                )
-            else:
-                b_df = mod.scrape_lever(
-                    slugs,
-                    max_results=s.get("results_wanted", 50),
-                    hours_old=None,
-                )
-        except Exception as e:
-            print(f"[scraper] WARNING: {label} boards scrape failed: {e}")
-            note(label, error=str(e))
-            b_df = None
-        if b_df is not None and not b_df.empty:
-            b_df["_loose_location"] = True
-            all_frames.append(b_df)
-            note(label, rows=len(b_df))
-        elif b_df is not None:
-            note(label)
+    # All four source blocks are independent I/O-bound work (HTTP waits,
+    # browser page loads, Glassdoor cooldown sleeps), so they run
+    # concurrently. Frames merge in fixed order (jobspy, jobstreet,
+    # glassdoor, boards) and every note() still happens on this thread,
+    # so stats, warnings and within-run dedupe behave exactly as before.
+    blocks: dict = {}
+    with ThreadPoolExecutor(max_workers=_SOURCE_WORKERS) as pool:
+        futs = {}
+        if jobspy_sites:
+            futs[pool.submit(_run_jobspy_block, s, terms, jobspy_sites)] = "jobspy"
+        if use_jobstreet:
+            futs[pool.submit(_run_jobstreet_block, s, terms)] = "jobstreet"
+        if use_glassdoor:
+            futs[pool.submit(_run_glassdoor_block, cfg, s, terms)] = "glassdoor"
+        futs[pool.submit(_run_boards_block, cfg, s)] = "boards"
+        for f in as_completed(futs):
+            blocks[futs[f]] = f.result()
+    for name in ("jobspy", "jobstreet", "glassdoor", "boards"):
+        frames, notes = blocks.get(name, ([], []))
+        all_frames.extend(frames)
+        for source, rows, error in notes:
+            note(source, rows=rows, error=error)
 
     last_source_report = stats
     for source, st in stats.items():

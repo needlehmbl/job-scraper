@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 from locations import is_ph_or_metro
 
@@ -53,6 +54,20 @@ def _age_hours(dt) -> float | None:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return (now - dt).total_seconds() / 3600.0
+
+
+_DETAIL_WORKERS = 5
+
+
+def _fetch_detail(slug: str, job_id) -> dict:
+    """One Greenhouse job-detail fetch. Never raises -- {} on failure."""
+    try:
+        detail = _get(DETAIL_URL.format(slug=slug, job_id=job_id))
+    except Exception as e:
+        print(f"[greenhouse] WARNING: '{slug}' job {job_id} "
+              f"detail failed: {e}")
+        return {}
+    return detail if isinstance(detail, dict) else {}
 
 
 def _get(url: str):
@@ -99,7 +114,8 @@ def scrape_greenhouse(slugs, max_results: int = 50,
             print(f"[greenhouse] WARNING: board '{slug}' failed: {e}")
             continue
         items = payload.get("jobs", []) if isinstance(payload, dict) else []
-        rows = []
+        # Pass 1 (cheap, local): location/age prefilter + max_results cap.
+        candidates = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -111,18 +127,19 @@ def scrape_greenhouse(slugs, max_results: int = 50,
                 age = _age_hours(_parse_dt(item.get("updated_at")))
                 if age is not None and age > hours_old:
                     continue
-            if len(rows) >= max_results:
+            candidates.append(item)
+            if len(candidates) >= max_results:
                 break
-            try:
-                detail = _get(DETAIL_URL.format(slug=slug,
-                                                job_id=item.get("id")))
-            except Exception as e:
-                print(f"[greenhouse] WARNING: '{slug}' job {item.get('id')} "
-                      f"detail failed: {e}")
-                detail = {}
-            if not isinstance(detail, dict):
-                detail = {}
-            rows.append(_map_detail(slug, company, item, detail))
+        # Pass 2 (I/O-bound): detail fetches concurrently, rows mapped back
+        # in board order so output order matches the sequential run.
+        rows = []
+        if candidates:
+            with ThreadPoolExecutor(
+                    max_workers=min(_DETAIL_WORKERS, len(candidates))) as pool:
+                details = list(pool.map(
+                    lambda it: _fetch_detail(slug, it.get("id")), candidates))
+            rows = [_map_detail(slug, company, item, detail)
+                    for item, detail in zip(candidates, details)]
         if rows:
             df = pd.DataFrame(rows)
             df["matched_search_term"] = f"board:{slug}"
