@@ -24,6 +24,19 @@ def connect():
     return psycopg2.connect(DATABASE_URL)
 
 
+def known_urls(conn=None) -> set:
+    """All stored job URLs (normalized the way upsert/find store them).
+
+    One cheap query per scrape so fetchers can skip already-stored
+    postings BEFORE expensive per-job work (detail fetches, AI scoring).
+    Skipped rows still flow through so last_seen stays fresh.
+    """
+    conn = conn or connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT url FROM jobs WHERE url <> ''")
+        return {r[0] for r in cur.fetchall() if r[0]}
+
+
 def find_existing(row: dict, conn=None):
     """Return the tracker DB row matching a scraped job, or None.
 

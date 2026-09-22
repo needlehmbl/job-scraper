@@ -10,6 +10,7 @@ JSON APIs) are handled by greenhouse.py / lever.py. This module merges all
 frames in.
 """
 import re
+import threading
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -132,6 +133,14 @@ def normalize_url(url) -> str:
 _JOBSPY_WORKERS = 6
 _SOURCE_WORKERS = 4
 
+# Per-site throttle for jobspy calls. 2026-09-22: 6-wide parallel
+# LinkedIn searches drew "too many 429" rate-limiting (sequential runs
+# never did), so LinkedIn goes one-at-a-time while Indeed etc. keep
+# full parallelism. Add a site here only with 429 evidence.
+_SITE_SEMAPHORES = {
+    "linkedin": threading.Semaphore(1),
+}
+
 
 def _jobspy_kwargs(s: dict, site: str, term: str) -> dict:
     kwargs = dict(
@@ -165,8 +174,13 @@ def _jobspy_kwargs(s: dict, site: str, term: str) -> dict:
 
 def _jobspy_one(site: str, term: str, kwargs: dict):
     """One jobspy call in a worker thread. Returns (df_or_None, error_str)."""
+    sem = _SITE_SEMAPHORES.get(site)
     try:
-        df = scrape_jobs(**kwargs)
+        if sem is not None:
+            with sem:
+                df = scrape_jobs(**kwargs)
+        else:
+            df = scrape_jobs(**kwargs)
     except Exception as e:
         return None, f"{term}: {e}"
     if df is not None and not df.empty:
@@ -260,7 +274,7 @@ def _run_glassdoor_block(cfg: dict, s: dict, terms: list):
     return frames, notes
 
 
-def _run_boards_block(cfg: dict, s: dict):
+def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
     """Greenhouse/Lever board pulls. Returns (frames, notes)."""
     frames, notes = [], []
     for mod, label in ((greenhouse, "greenhouse"), (lever, "lever")):
@@ -273,6 +287,7 @@ def _run_boards_block(cfg: dict, s: dict):
                     slugs,
                     max_results=s.get("results_wanted", 50),
                     hours_old=None,
+                    seen_urls=seen_urls,
                 )
             else:
                 b_df = mod.scrape_lever(
@@ -293,7 +308,7 @@ def _run_boards_block(cfg: dict, s: dict):
     return frames, notes
 
 
-def scrape(cfg: dict) -> pd.DataFrame:
+def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     s = cfg["search"]
     all_frames = []
     global last_source_report
@@ -328,7 +343,7 @@ def scrape(cfg: dict) -> pd.DataFrame:
             futs[pool.submit(_run_jobstreet_block, s, terms)] = "jobstreet"
         if use_glassdoor:
             futs[pool.submit(_run_glassdoor_block, cfg, s, terms)] = "glassdoor"
-        futs[pool.submit(_run_boards_block, cfg, s)] = "boards"
+        futs[pool.submit(_run_boards_block, cfg, s, seen_urls)] = "boards"
         for f in as_completed(futs):
             blocks[futs[f]] = f.result()
     for name in ("jobspy", "jobstreet", "glassdoor", "boards"):
@@ -363,7 +378,7 @@ def scrape(cfg: dict) -> pd.DataFrame:
         combined = combined.drop_duplicates(subset=["title", "company", "location"])
 
     combined = apply_keyword_filters(combined, s)
-    combined = apply_feedback_filter(combined, cfg)
+    combined = apply_feedback_filter(combined, cfg, seen_urls)
     return combined.reset_index(drop=True)
 
 
@@ -410,7 +425,8 @@ def apply_keyword_filters(df: pd.DataFrame, s: dict) -> pd.DataFrame:
     return out
 
 
-def apply_feedback_filter(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+def apply_feedback_filter(df: pd.DataFrame, cfg: dict,
+                            seen_urls: set | None = None) -> pd.DataFrame:
     """Drop postings resembling past negatively-decided dashboard rows.
 
     See feedback.py. Best-effort: any error returns the input unchanged so
@@ -420,7 +436,7 @@ def apply_feedback_filter(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         import feedback
         before = len(df)
         report: dict = {}
-        out = feedback.apply_feedback(df, cfg, report=report)
+        out = feedback.apply_feedback(df, cfg, report=report, seen_urls=seen_urls)
         global last_feedback_report
         last_feedback_report = report
         if out is not None and len(out) != before:

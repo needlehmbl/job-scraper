@@ -795,7 +795,23 @@ def _build_scoring_prompt(decisions: list[dict], batch_rows: list[dict],
     return system, user
 
 
-def ai_filter(df, decisions: list[dict], fc: dict, keys: dict):
+def _unseen_mask(df, skip_urls: set | None):
+    """Boolean mask of rows NOT already stored (by normalized job_url).
+
+    Stored postings still flow through heuristic filtering and stay in the
+    frame (the pipeline touches last_seen for them) -- they just skip the
+    LLM scoring, which would be pure token waste on duplicates.
+    """
+    import pandas as pd
+    if not skip_urls or df is None or "job_url" not in df.columns:
+        return pd.Series(True, index=df.index) if df is not None else None
+    norm = df["job_url"].map(
+        lambda u: (u or "").strip().lower().rstrip("/") if isinstance(u, str) else "")
+    return ~norm.isin(skip_urls)
+
+
+def ai_filter(df, decisions: list[dict], fc: dict, keys: dict,
+              skip_urls: set | None = None):
     """Ask an LLM which new postings match your reject patterns.
 
     The batch is scored in chunks (one LLM call per chunk, capped per
@@ -817,11 +833,15 @@ def ai_filter(df, decisions: list[dict], fc: dict, keys: dict):
 
     per_call = max(1, int(fc["ai_jobs_per_call"] or fc["max_jobs_per_ai_call"] or 40))
     max_chunks = max(1, int(fc["ai_max_chunks_per_scrape"] or 1))
-    cover = min(len(df), per_call * max_chunks)
-    if len(df) > cover:
-        print(f"[feedback] AI scoring covers {cover} of {len(df)} postings "
+    fresh = df[_unseen_mask(df, skip_urls)]
+    n_skipped = len(df) - len(fresh)
+    if n_skipped:
+        print(f"[feedback] AI scoring skips {n_skipped} already-stored postings.")
+    cover = min(len(fresh), per_call * max_chunks)
+    if len(fresh) > cover:
+        print(f"[feedback] AI scoring covers {cover} of {len(fresh)} postings "
               f"({max_chunks} chunk(s) x {per_call}); the rest is heuristic-only.")
-    work = df.head(cover)
+    work = fresh.head(cover)
     chunks = [work.iloc[i:i + per_call] for i in range(0, len(work), per_call)]
 
     has_desc = "description" in work.columns
@@ -962,7 +982,8 @@ def _record_usage_name(fc: dict, usage_name: str, tokens_used: int):
         print(f"[feedback] WARNING: could not record AI usage: {e}")
 
 
-def apply_feedback(df, cfg: dict, report: dict | None = None):
+def apply_feedback(df, cfg: dict, report: dict | None = None,
+                   seen_urls: set | None = None):
     """Main entry: filter a freshly-scraped frame using dashboard feedback.
 
     Runs heuristic always, AI when keys allow. Never raises -- on any
@@ -970,6 +991,8 @@ def apply_feedback(df, cfg: dict, report: dict | None = None):
     is given, it is filled with heuristic_dropped / heuristic_reasons /
     ai_dropped / ai_provider plus `dropped_rows` (one dict per filtered
     posting with its filter_reason) so callers can persist them for review.
+    `seen_urls` (stored postings) skip AI scoring only -- they stay in the
+    frame so the pipeline still touches last_seen.
     """
     fc = _cfg(cfg)
     if not fc["enabled"] or df is None or getattr(df, "empty", True):
@@ -1013,7 +1036,8 @@ def apply_feedback(df, cfg: dict, report: dict | None = None):
         except Exception:
             keys = {}
         if keys:
-            df, n_ai, ai_name, dropped_ai = ai_filter(df, decisions, fc, keys)
+            df, n_ai, ai_name, dropped_ai = ai_filter(
+                df, decisions, fc, keys, skip_urls=seen_urls)
             if dropped_ai is not None and not dropped_ai.empty:
                 dropped_frames.append(dropped_ai)
             if report is not None:

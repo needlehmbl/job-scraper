@@ -423,7 +423,10 @@ all sources **concurrently** (one thread each: JobSpy sites searched in
 parallel, plus JobStreet, Glassdoor/Playwright, and Greenhouse/Lever
 boards), then merges and filters — so a single failing board can't
 poison the others and the slowest source sets the pace instead of the
-sum. It builds a per-term
+sum. Two exceptions keep it polite and cheap: LinkedIn term-searches run
+one-at-a-time (parallel LinkedIn drew 429 rate-limiting), and URLs
+already stored skip Greenhouse detail fetches and AI scoring — they still
+flow through so `last_seen` stays fresh. It builds a per-term
 `google_search_term` when `google` is enabled, since Google Jobs filters
 only via that parameter. JobSpy supports `linkedin`, `indeed`,
 `glassdoor`, `google`, `zip_recruiter`, `bayt`, `naukri`, `bdjobs`.

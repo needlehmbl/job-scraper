@@ -102,9 +102,18 @@ def _map_detail(slug: str, company: str, item: dict, detail: dict) -> dict:
     }
 
 
+def _norm_url(u) -> str:
+    return (u or "").strip().lower().rstrip("/")
+
+
 def scrape_greenhouse(slugs, max_results: int = 50,
-                      hours_old: float | None = None) -> pd.DataFrame:
-    """Fetch PH-relevant postings from one or more Greenhouse boards."""
+                      hours_old: float | None = None,
+                      seen_urls: set | None = None) -> pd.DataFrame:
+    """Fetch PH-relevant postings from one or more Greenhouse boards.
+
+    URLs already in `seen_urls` (stored postings) skip the detail fetch --
+    the list row is emitted as-is so the pipeline still touches last_seen.
+    """
     frames = []
     for slug, company in _board_specs(slugs):
         print(f"[greenhouse] board: '{slug}'")
@@ -115,7 +124,11 @@ def scrape_greenhouse(slugs, max_results: int = 50,
             continue
         items = payload.get("jobs", []) if isinstance(payload, dict) else []
         # Pass 1 (cheap, local): location/age prefilter + max_results cap.
-        candidates = []
+        # Already-stored URLs skip Pass 2 (detail fetch) but stay in the
+        # frame so the pipeline still touches last_seen for them.
+        seen = seen_urls or set()
+        candidates, rows = [], []
+        skipped_details = 0
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -127,19 +140,26 @@ def scrape_greenhouse(slugs, max_results: int = 50,
                 age = _age_hours(_parse_dt(item.get("updated_at")))
                 if age is not None and age > hours_old:
                     continue
+            if _norm_url(item.get("absolute_url", "")) in seen:
+                rows.append(_map_detail(slug, company, item, {}))
+                skipped_details += 1
+                continue
             candidates.append(item)
             if len(candidates) >= max_results:
                 break
         # Pass 2 (I/O-bound): detail fetches concurrently, rows mapped back
         # in board order so output order matches the sequential run.
-        rows = []
+        # (Seen rows from Pass 1 are already in `rows` -- extend, don't reset.)
         if candidates:
             with ThreadPoolExecutor(
                     max_workers=min(_DETAIL_WORKERS, len(candidates))) as pool:
                 details = list(pool.map(
                     lambda it: _fetch_detail(slug, it.get("id")), candidates))
-            rows = [_map_detail(slug, company, item, detail)
-                    for item, detail in zip(candidates, details)]
+            rows.extend(_map_detail(slug, company, item, detail)
+                        for item, detail in zip(candidates, details))
+        if skipped_details:
+            print(f"[greenhouse] '{slug}': {skipped_details} stored jobs "
+                  f"kept list-only (no detail fetch)")
         if rows:
             df = pd.DataFrame(rows)
             df["matched_search_term"] = f"board:{slug}"

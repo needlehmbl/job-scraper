@@ -122,7 +122,13 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         db.ensure_filtered_schema()
     except Exception as e:
         print(f"[pipeline] WARNING: tracking migration failed: {e}")
-    jobs = scrape(cfg)
+    try:
+        seen_urls = db.known_urls()
+    except Exception as e:
+        print(f"[pipeline] WARNING: could not load stored URLs ({e}); "
+              f"no fetch/AI skipping this run.")
+        seen_urls = set()
+    jobs = scrape(cfg, seen_urls=seen_urls)
     print(f"[pipeline] {len(jobs)} jobs after scraping + filters")
     src_report = dict(getattr(scraper_mod, "last_source_report", {}) or {})
     warnings = [
