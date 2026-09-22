@@ -66,6 +66,8 @@ def _jrow(job, bank_low=None, _score_fn=None) -> dict:
     dpost = job.get("date_posted")
     if dpost is None or _is_missing(dpost):
         dpost = None
+    elif isinstance(dpost, str) and not dpost.strip():
+        dpost = None  # dateless rows (Glassdoor cards, board list rows) -> NULL, not ''
     row = {
         "source": _source(job),
         "title": _clean(job.get("title", "")),
