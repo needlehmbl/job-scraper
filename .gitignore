@@ -26,3 +26,5 @@ dashboard.log
 dashboard/dist/
 dashboard/node_modules/
 dashboard/.vite/
+# Playwright login cookies -- never commit
+storage_state/
