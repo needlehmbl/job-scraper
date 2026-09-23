@@ -63,14 +63,40 @@ els => els.map(li => {
 """
 
 
-def _clean_url(href: str) -> str:
-    """Canonical job URL: path only (the ?jl= impression param varies)."""
-    if not href:
+def _clean_url(href: str, jobid: str = "") -> str:
+    """Canonical Glassdoor URL — keep the ?jl= job ID (required).
+
+    The page path alone (…/job-listing …htm) is a slug, not a stable
+    identifier. Glassdoor needs ?jl=<data-jobid> to serve the single
+    posting; without it the link lands on a generic listing that
+    immediately goes OOO ("job is no longer available"). The old
+    helper stripped all query params, so every stored Glassdoor link
+    was broken.
+    """
+    import re
+    if not href and not jobid:
         return ""
-    path = href.split("#", 1)[0].split("?", 1)[0]
+    # Try to extract jl from href; fall back to the card's data-jobid
+    jl = ""
+    if href:
+        m = re.search(r"[?&]jl=(\d+)", href)
+        if m:
+            jl = m.group(1)
+    if not jl:
+        jl = (jobid or "").strip()
+    # Base path without query/fragment
+    raw = href or ""
+    path = raw.split("#", 1)[0].split("?", 1)[0] if raw else ""
     if path.startswith("/"):
-        return BASE + path
-    return path if path.startswith("http") else ""
+        path = BASE + path
+    elif path.startswith("http"):
+        pass  # already absolute
+    elif jl:
+        # No usable path (rare) — fall back to jl-only view
+        return f"{BASE}/job-listing/view.htm?jl={jl}"
+    else:
+        return ""
+    return f"{path}?jl={jl}" if jl else path
 
 
 class GlassdoorScraper:
@@ -160,7 +186,9 @@ class GlassdoorScraper:
                 break
             n = 0
             for c in cards:
-                job_url = _clean_url(c.get("href", ""))
+                job_url = _clean_url(c.get("href", ""), c.get("jobid", ""))
+                # Dedupe on the normalized full URL (includes jl); strip
+                # only trailing slash, keep query (jl makes each posting unique)
                 key = job_url.lower().rstrip("/")
                 if not key or key in seen:
                     continue
