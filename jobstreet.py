@@ -250,25 +250,84 @@ def scrape_jobstreet(terms, where, max_results=50, hours_old=None,
 
 if __name__ == "__main__":
     import sys as _sys
-    if "--login" in _sys.argv:
-        # Headed login: open Chrome, let user finish Google + Cloudflare, then save storage_state
+    if "--login" in _sys.argv or "--login-profile" in _sys.argv:
         import pathlib as _plogin
+        import shutil as _shutil
         _login_path = _plogin.Path(__file__).parent / "storage_state" / "jobstreet.json"
         _login_path.parent.mkdir(parents=True, exist_ok=True)
+        # --login-profile: copy live Chromium profile (already logged in via regular browser) and export storage_state.
+        # Use this when Google OAuth popup is blocked in automation. No Google sign-in needed in Playwright.
+        if "--login-profile" in _sys.argv:
+            _src = _plogin.Path.home() / ".config" / "google-chrome" / "Default"
+            # Fallback to chromium profile if chrome default not present
+            if not _src.exists():
+                _src = _plogin.Path.home() / ".config" / "chromium" / "Default"
+            if not _src.exists():
+                print(f"[jobstreet] --login-profile: no live profile found at {_src}")
+                print("[jobstreet] Close your browser and try --login instead (manual Google sign-in)")
+                _sys.exit(1)
+            _tmp = _plogin.Path("/tmp/jobstreet-profile-copy")
+            if _tmp.exists():
+                _shutil.rmtree(_tmp)
+            print(f"[jobstreet] copying live profile {_src} -> {_tmp} (this may take a few seconds, close Chrome if it fails)")
+            try:
+                _shutil.copytree(_src, _tmp, ignore=_shutil.ignore_patterns("Cache", "Code Cache", "GPUCache", "ShaderCache"))
+            except Exception as e:
+                print(f"[jobstreet] copy failed: {e} -- close your browser and try again, or use --login for manual sign-in")
+                _sys.exit(1)
+            from playwright.sync_api import sync_playwright as _spw2
+            _pw2 = _spw2().start()
+            _ctx2 = _pw2.chromium.launch_persistent_context(
+                str(_tmp), headless=False, args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+                viewport={"width": 1400, "height": 900},
+            )
+            _page2 = _ctx2.pages[0] if _ctx2.pages else _ctx2.new_page()
+            try:
+                _page2.goto(BASE, wait_until="domcontentloaded", timeout=30000)
+            except Exception:
+                pass
+            print(f"[jobstreet] opened {BASE} from copied profile. Verify you are logged in, then press Enter to save...")
+            try:
+                input()
+            except EOFError:
+                pass
+            _ctx2.storage_state(path=str(_login_path))
+            print(f"[jobstreet] login-profile: saved storage_state to {_login_path} ({_login_path.stat().st_size} bytes)")
+            try:
+                _ctx2.close()
+            except Exception:
+                pass
+            _pw2.stop()
+            # Clean up tmp copy on success (keep for debugging if needed)
+            try:
+                _shutil.rmtree(_tmp)
+            except Exception:
+                pass
+            _sys.exit(0)
+        # --login: headed login with popup handling
         print(f"[jobstreet] login: opening headed browser -> {BASE}")
         print(f"[jobstreet] login: sign in with Google, clear any Cloudflare challenge, then press Enter in this terminal to save.")
+        print(f"[jobstreet] login: NOTE: Google blocks automation popups; if Sign-in with Google does nothing, close this and use --login-profile instead.")
         from playwright.sync_api import sync_playwright as _spw
         _pw = _spw().start()
-        # Prefer installed Chrome for Google login (more trusted), fall back to Chromium
         try:
-            _browser = _pw.chromium.launch(headless=False, channel="chrome", args=["--disable-blink-features=AutomationControlled", "--no-sandbox"])
+            _browser = _pw.chromium.launch(headless=False, channel="chrome", args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-popup-blocking"])
         except Exception:
-            _browser = _pw.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled", "--no-sandbox"])
+            _browser = _pw.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-popup-blocking"])
         _ctx = _browser.new_context(
             user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
             locale="en-PH",
             viewport={"width": 1400, "height": 900},
         )
+        # Popup handling: clicks to accounts.google.com open as new page/popup
+        def _on_popup(popup):
+            try:
+                popup.wait_for_load_state("domcontentloaded", timeout=10000)
+                print(f"[jobstreet] popup opened: {popup.url[:120]}")
+            except Exception:
+                pass
+        # new_page popup via context event
+        _ctx.on("page", _on_popup)
         _page = _ctx.new_page()
         _page.goto(BASE, wait_until="domcontentloaded")
         print(f"[jobstreet] login: browser ready at {BASE}. Finish login, then hit Enter here...")
