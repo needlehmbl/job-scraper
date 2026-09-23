@@ -236,7 +236,7 @@ function useDarkMode() {
   return [dark, setDark]
 }
 
-function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged }) {
+function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup }) {
   const [open, setOpen] = useState(false)
   const [history, setHistory] = useState(null)
   const [salary, setSalary] = useState(job.offer_salary || '')
@@ -345,6 +345,19 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged }) {
             {timeAgo(job.status_updated_at)}
           </span>
         </td>
+        <td className="px-4 py-3">
+          <input
+            type="date"
+            value={job.follow_up_at ? String(job.follow_up_at).slice(0, 10) : ''}
+            onChange={(e) => onFollowup && onFollowup(job, e.target.value)}
+            title={job.follow_up_at ? `Follow up by ${String(job.follow_up_at).slice(0, 10)}` : 'Set a ping-if-no-response date'}
+            className={`rounded-lg border px-2 py-1 text-xs dark:bg-neutral-800 ${
+              isFollowupDue(job)
+                ? 'border-rose-400 bg-rose-50 text-rose-700 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-300'
+                : 'border-neutral-300 dark:border-neutral-700'
+            }`}
+          />
+        </td>
         <td className="px-4 py-3 text-right sticky right-0 bg-white dark:bg-neutral-900">
           <button
             onClick={toggle}
@@ -357,7 +370,7 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged }) {
       </tr>
       {open && (
         <tr className="bg-neutral-50 dark:bg-neutral-800/30">
-          <td colSpan={5} className="px-8 py-3">
+          <td colSpan={6} className="px-8 py-3">
             <h4 className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Timeline</h4>
             {history === null ? (
               <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">Loading…</p>
@@ -467,6 +480,10 @@ export default function App() {
   const [scoreDir, setScoreDir] = useState('desc') // null | 'desc' | 'asc' (default: best fit first)
   const [postedDir, setPostedDir] = useState(null) // null | 'desc' | 'asc'
   const [dueOnly, setDueOnly] = useState(false)
+  const [filterReason, setFilterReason] = useState('')
+  const [filterSource, setFilterSource] = useState('')
+  const [filtPostedDir, setFiltPostedDir] = useState(null) // null | 'desc' | 'asc'
+  const [filtFilteredDir, setFiltFilteredDir] = useState(null) // null | 'desc' | 'asc'
   const [filteredNote, setFilteredNote] = useState('')
   const [restoring, setRestoring] = useState(null)
   const [showDupes, setShowDupes] = useState(false)
@@ -577,13 +594,10 @@ export default function App() {
       if (source && job.source !== source) return false
       if (dateFrom && String(job.date_posted || '').slice(0, 10) < dateFrom) return false
       if (dateTo && String(job.date_posted || '').slice(0, 10) > dateTo) return false
-      if (dueOnly && !isFollowupDue(job)) return false
       if (!matchesSearch(job, parsedSearch)) return false
       return true
     })
-  }, [jobs, status, hidden, source, dateFrom, dateTo, dueOnly, parsedSearch])
-
-  const dueCount = useMemo(() => jobs.filter(isFollowupDue).length, [jobs])
+  }, [jobs, status, hidden, source, dateFrom, dateTo, parsedSearch])
 
   const hiddenCounts = useMemo(() => {
     const counts = {}
@@ -603,10 +617,37 @@ export default function App() {
     [dupeGroups]
   )
 
-  const visibleFiltered = useMemo(
-    () => pendingFiltered.filter((job) => matchesSearch(job, parsedSearch)),
-    [pendingFiltered, parsedSearch]
-  )
+  const visibleFiltered = useMemo(() => {
+    const rows = pendingFiltered.filter((job) => {
+      if (filterReason && job.filter_reason !== filterReason) return false
+      if (filterSource && job.source !== filterSource) return false
+      return matchesSearch(job, parsedSearch)
+    })
+    let sorted = [...rows]
+    if (filtPostedDir) {
+      const dir = filtPostedDir === 'asc' ? 1 : -1
+      const t = (j) => (j.date_posted ? new Date(j.date_posted).getTime() : null)
+      sorted.sort((a, b) => {
+        const ta = t(a), tb = t(b)
+        if (ta === null && tb === null) return 0
+        if (ta === null) return 1
+        if (tb === null) return -1
+        return dir * (ta - tb)
+      })
+    }
+    if (filtFilteredDir) {
+      const dir = filtFilteredDir === 'asc' ? 1 : -1
+      const t = (j) => (j.filtered_at ? new Date(j.filtered_at).getTime() : null)
+      sorted.sort((a, b) => {
+        const ta = t(a), tb = t(b)
+        if (ta === null && tb === null) return 0
+        if (ta === null) return 1
+        if (tb === null) return -1
+        return dir * (ta - tb)
+      })
+    }
+    return sorted
+  }, [pendingFiltered, parsedSearch, filterReason, filterSource, filtPostedDir, filtFilteredDir])
 
   // APPLIED rows "move out" of Jobs into the Applications tab, where the
   // funnel stage (not the triage status) is tracked.
@@ -626,10 +667,11 @@ export default function App() {
           if (appFilter === 'progress' && !IN_PROGRESS_STAGES.includes(stage)) return false
           if (appFilter === 'offers' && !OFFER_STAGES.includes(stage)) return false
           if (appFilter === 'rejected' && stage !== 'OUT') return false
+          if (dueOnly && !isFollowupDue(job)) return false
           return matchesSearch(job, parsedSearch)
         })
         .sort((a, b) => new Date(b.status_updated_at || 0).getTime() - new Date(a.status_updated_at || 0).getTime()),
-    [jobs, appFilter, parsedSearch]
+    [jobs, appFilter, dueOnly, parsedSearch]
   )
 
   const appCounts = useMemo(() => {
@@ -640,6 +682,7 @@ export default function App() {
       progress: applied.filter((job) => IN_PROGRESS_STAGES.includes(stageOf(job))).length,
       offers: applied.filter((job) => OFFER_STAGES.includes(stageOf(job))).length,
       rejected: applied.filter((job) => stageOf(job) === 'OUT').length,
+      due: applied.filter(isFollowupDue).length,
     }
   }, [jobs])
 
@@ -692,6 +735,16 @@ export default function App() {
     setScrapedDir(null)
     setScoreDir(null)
     setPostedDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
+  }, [])
+
+  const cycleFiltPostedSort = useCallback(() => {
+    setFiltFilteredDir(null)
+    setFiltPostedDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
+  }, [])
+
+  const cycleFiltFilteredSort = useCallback(() => {
+    setFiltPostedDir(null)
+    setFiltFilteredDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
   }, [])
 
   const updateJobs = useCallback(
@@ -1514,17 +1567,6 @@ export default function App() {
               </button>
             )
           })}
-          <button
-            onClick={() => setDueOnly((v) => !v)}
-            title="Show only postings with a follow-up date of today or earlier"
-            className={`rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition ${
-              dueOnly
-                ? 'bg-violet-600 text-white ring-violet-600'
-                : 'bg-white text-neutral-500 ring-neutral-300 hover:bg-neutral-100 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700 dark:hover:bg-neutral-700'
-            }`}
-          >
-            {dueOnly ? '✕' : '◌'} Due follow-ups ({dueCount})
-          </button>
           <select
             value={source}
             onChange={(e) => setSource(e.target.value)}
@@ -1657,9 +1699,6 @@ export default function App() {
                       Scraped {scrapedDir === 'desc' ? '▼' : scrapedDir === 'asc' ? '▲' : '↕'}
                     </button>
                   </th>
-                  <th className="px-4 py-3 font-medium" title="Ping-if-no-response reminder (toggle with the Due follow-ups chip above)">
-                    Follow-up
-                  </th>
                   <th className="px-4 py-3 font-medium">Status</th>
                   <th className="sticky right-0 bg-white px-4 py-3 text-right font-medium shadow-[-8px_0_12px_-8px_rgba(0,0,0,0.15)] dark:bg-neutral-900">Actions</th>
                 </tr>
@@ -1715,33 +1754,6 @@ export default function App() {
                     <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
                       {fmtDate(job.date_posted)}
                     </td>
-                    <td
-                      className="whitespace-nowrap px-4 py-3 text-neutral-600 dark:text-neutral-400"
-                      title={job.scraped_at ? `First seen ${timeAgo(job.scraped_at)} · last seen ${timeAgo(job.last_seen || job.scraped_at)}` : 'Scrape time unknown'}
-                    >
-                      {fmtDateTime(job.scraped_at)}
-                      <span className="block text-xs text-neutral-400 dark:text-neutral-500">
-                        seen {timeAgo(job.last_seen || job.scraped_at)}
-                        {isStale(job) && (
-                          <span className="ml-1 rounded bg-amber-100 px-1 py-px font-medium text-amber-700 dark:bg-amber-900 dark:text-amber-300" title="Not seen in any scrape for 30+ days — link may be dead">
-                            stale
-                          </span>
-                        )}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <input
-                        type="date"
-                        value={job.follow_up_at ? String(job.follow_up_at).slice(0, 10) : ''}
-                        onChange={(e) => setFollowup(job, e.target.value)}
-                        title={job.follow_up_at ? `Follow up by ${String(job.follow_up_at).slice(0, 10)}` : 'Set a ping-if-no-response date'}
-                        className={`rounded-lg border px-2 py-1 text-xs dark:bg-neutral-800 ${
-                          isFollowupDue(job)
-                            ? 'border-rose-400 bg-rose-50 text-rose-700 dark:border-rose-600 dark:bg-rose-950 dark:text-rose-300'
-                            : 'border-neutral-300 dark:border-neutral-700'
-                        }`}
-                      />
-                    </td>
                     <td className="px-4 py-3">
                       <select
                         value={job.status}
@@ -1779,7 +1791,7 @@ export default function App() {
                   </tr>
                   {confirmApplyId === job.id && (
                     <tr className="bg-emerald-50 dark:bg-emerald-950/40">
-                      <td colSpan={10} className="px-4 py-2.5">
+                      <td colSpan={9} className="px-4 py-2.5">
                         <div className="flex flex-wrap items-center gap-2 text-xs">
                           <span className="font-medium text-neutral-700 dark:text-neutral-200">
                             Did you submit the application for “{job.title || 'Untitled'}”?
@@ -1828,6 +1840,28 @@ export default function App() {
               {filteredNote}
             </p>
           )}
+          <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
+            <select
+              value={filterReason}
+              onChange={(e) => setFilterReason(e.target.value)}
+              className="rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+            >
+              <option value="">All reasons</option>
+              {[...new Set(pendingFiltered.map((j) => j.filter_reason).filter(Boolean))].map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+            <select
+              value={filterSource}
+              onChange={(e) => setFilterSource(e.target.value)}
+              className="rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+            >
+              <option value="">All sources</option>
+              {SOURCES.map((src) => (
+                <option key={src} value={src}>{src}</option>
+              ))}
+            </select>
+          </div>
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               Loading filtered postings…
@@ -1844,9 +1878,27 @@ export default function App() {
                   <th className="px-4 py-3 font-medium">Title</th>
                   <th className="px-4 py-3 font-medium">Company</th>
                   <th className="px-4 py-3 font-medium">Source</th>
-                  <th className="px-4 py-3 font-medium">Posted</th>
-                  <th className="px-4 py-3 font-medium">Filter reason</th>
-                  <th className="px-4 py-3 font-medium">Filtered</th>
+                  <th className="px-4 py-3 font-medium">
+                    <button
+                      onClick={cycleFiltPostedSort}
+                      title="Sort by posting date"
+                      className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
+                    >
+                      Posted {filtPostedDir === 'desc' ? '▼' : filtPostedDir === 'asc' ? '▲' : '↕'}
+                    </button>
+                  </th>
+                  <th className="px-4 py-3 font-medium" title="Why the auto-filter held this posting out">
+                    Filter reason
+                  </th>
+                  <th className="px-4 py-3 font-medium">
+                    <button
+                      onClick={cycleFiltFilteredSort}
+                      title="Sort by filtered date"
+                      className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
+                    >
+                      Filtered {filtFilteredDir === 'desc' ? '▼' : filtFilteredDir === 'asc' ? '▲' : '↕'}
+                    </button>
+                  </th>
                   <th className="sticky right-0 bg-white px-4 py-3 text-right font-medium shadow-[-8px_0_12px_-8px_rgba(0,0,0,0.15)] dark:bg-neutral-900">Actions</th>
                 </tr>
               </thead>
@@ -1958,6 +2010,17 @@ export default function App() {
                 {label}
               </button>
             ))}
+            <button
+              onClick={() => setDueOnly((v) => !v)}
+              title="Show only applications with a follow-up date of today or earlier"
+              className={`rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition ${
+                dueOnly
+                  ? 'bg-violet-600 text-white ring-violet-600'
+                  : 'bg-white text-neutral-500 ring-neutral-300 hover:bg-neutral-100 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700 dark:hover:bg-neutral-700'
+              }`}
+            >
+              Due follow-ups ({appCounts.due})
+            </button>
             <input
               type="search"
               placeholder="Filter applications…"
@@ -1983,13 +2046,14 @@ export default function App() {
                   <th className="px-4 py-3 font-medium">Company</th>
                   <th className="px-4 py-3 font-medium">Stage</th>
                   <th className="px-4 py-3 font-medium">Updated</th>
+                  <th className="px-4 py-3 font-medium">Follow-up</th>
                   <th className="px-4 py-3 text-right font-medium sticky right-0 bg-neutral-50 dark:bg-neutral-800">Details</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {applicationRows.map((job) => (
                   <ApplicationRow key={job.id} job={job} terms={parsedSearch.terms}
-                    onStage={setStage} onMoveBack={moveBackToJobs} onChanged={fetchAll} />
+                    onStage={setStage} onMoveBack={moveBackToJobs} onChanged={fetchAll} onFollowup={setFollowup} />
                 ))}
               </tbody>
             </table>
