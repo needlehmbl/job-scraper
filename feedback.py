@@ -275,7 +275,26 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
             hits[t] += 1
             if d.get("status") in BAD:
                 bad_hits[t] += 1
+    # Guard: never ban tokens that are explicitly in the user's
+    # include_title_keywords (search relevance gate) -- banning
+    # e.g. 'support'/'data'/'backend' would self-sabotage that search.
+    include_guard = set()
+    try:
+        import yaml as _yaml
+        from pathlib import Path as _P
+        _cfg_path = _P(__file__).parent / "config.yaml"
+        if _cfg_path.exists():
+            _scfg = _yaml.safe_load(_cfg_path.read_text()) or {}
+            for k in (_scfg.get("search", {}) or {}).get("include_title_keywords", []) or []:
+                if isinstance(k, str) and k.strip():
+                    # split multi-word entries into tokens for guard
+                    for tok in re.findall(r"[a-z0-9+#.]+", k.lower()):
+                        include_guard.add(tok)
+    except Exception:
+        pass
     for tok, n in hits.items():
+        if tok in include_guard:
+            continue
         if n >= fc["min_hits"] and bad_hits[tok] / n >= fc["min_reject_rate"]:
             patterns["keywords"].append(tok)
     patterns["keywords"].sort()
@@ -294,6 +313,25 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
     patterns["phrases"].sort()
 
     if fc["auto_exclude_companies"]:
+        # Guard: never ban companies that are explicitly targeted via company_boards
+        board_guard = set()
+        try:
+            import yaml as _yaml2
+            from pathlib import Path as _P2
+            _bpath = _P2(__file__).parent / "config.yaml"
+            if _bpath.exists():
+                _bcfg = _yaml2.safe_load(_bpath.read_text()) or {}
+                for prov in ("greenhouse", "lever"):
+                    for slug in (_bcfg.get("company_boards", {}) or {}).get(prov, []) or []:
+                        if isinstance(slug, str):
+                            board_guard.add(slug.strip().lower())
+                        elif isinstance(slug, dict):
+                            for k, v in slug.items():
+                                board_guard.add(str(k).lower())
+                                if isinstance(v, str):
+                                    board_guard.add(v.lower())
+        except Exception:
+            pass
         chits: Counter = Counter()
         cbad: Counter = Counter()
         for d in teachable:
@@ -304,14 +342,28 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
             if d.get("status") in BAD:
                 cbad[c] += 1
         for comp, n in chits.items():
+            if comp in board_guard:
+                continue
             if n >= fc["min_company_hits"] and cbad[comp] / n >= fc["min_company_reject_rate"]:
                 patterns["companies"].append(comp)
         patterns["companies"].sort()
 
     # Pass 3: stack skills in titles+descriptions. Same attribution as
     # pass 2 (location-explained skips don't teach), same thresholds.
+    # Resume overlap guard: never learn a stack that is on the candidate's
+    # own resume -- banning e.g. React/TypeScript would kill own-stack jobs.
     if fc.get("learn_desc_skills", True):
         lex = _lexicon()
+        # Build set of resume-present skills (lazy: uses same lexicon)
+        resume_present = set()
+        try:
+            import score as score_mod
+            bank_low = score_mod.load_bank_text()
+            if bank_low:
+                resume_present = {s for s, aliases in lex.items()
+                                  if any(a in bank_low for a in aliases)}
+        except Exception:
+            pass
         shits: Counter = Counter()
         sbad: Counter = Counter()
         for d in teachable:
@@ -319,6 +371,8 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
             if not text_low.strip():
                 continue
             for skill, aliases in lex.items():
+                if skill in resume_present:
+                    continue
                 if any(a in text_low for a in aliases):
                     shits[skill] += 1
                     if d.get("status") in BAD:

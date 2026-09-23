@@ -151,22 +151,22 @@ feedback:
   # decided jobs with >= min_reject_rate of them skipped.
   # SKIP, MISMATCH and EXP_GAP all count as "bad" everywhere below.
   # MISMATCH and EXP_GAP are finer-grained negative reasons, same weight.
-  min_hits: 2
-  min_reject_rate: 0.8
+  min_hits: 5
+  min_reject_rate: 0.9
   # Same idea for two-word phrases ("power platform", "civil engineer"),
   # which are more precise than single tokens.
-  min_phrase_hits: 2
+  min_phrase_hits: 5
   # Same idea for companies (e.g. a staffing firm you always skip).
   auto_exclude_companies: true
-  min_company_hits: 2
-  min_company_reject_rate: 0.75
+  min_company_hits: 4
+  min_company_reject_rate: 0.85
   # Stack-skill learning from titles+descriptions: canonical stack names
   # (Python, Salesforce, …) that overwhelmingly appear in postings you
   # reject/skip are auto-excluded -- so a generic "Associate Engineer"
   # title hiding a Salesforce description gets caught with no explicit
   # note from you. Descriptions are stored per row from the scrape that
   # adds them; older rows teach via title only.
-  learn_desc_skills: true
+  learn_desc_skills: false
   # AI re-check of the new batch against GOOD/BAD examples.
   use_ai: true
   # auto|groq|openrouter|mistral|gemini|off -- auto picks the first
