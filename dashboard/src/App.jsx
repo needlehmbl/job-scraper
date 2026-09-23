@@ -1754,6 +1754,20 @@ export default function App() {
                     <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
                       {fmtDate(job.date_posted)}
                     </td>
+                    <td
+                      className="whitespace-nowrap px-4 py-3 text-neutral-600 dark:text-neutral-400"
+                      title={job.scraped_at ? `First seen ${timeAgo(job.scraped_at)} · last seen ${timeAgo(job.last_seen || job.scraped_at)}` : 'Scrape time unknown'}
+                    >
+                      {fmtDateTime(job.scraped_at)}
+                      <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+                        seen {timeAgo(job.last_seen || job.scraped_at)}
+                        {isStale(job) && (
+                          <span className="ml-1 rounded bg-amber-100 px-1 py-px font-medium text-amber-700 dark:bg-amber-900 dark:text-amber-300" title="Not seen in any scrape for 30+ days — link may be dead">
+                            stale
+                          </span>
+                        )}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <select
                         value={job.status}
