@@ -489,6 +489,7 @@ export default function App() {
   const [showDupes, setShowDupes] = useState(false)
   const [keepers, setKeepers] = useState({})
   const [dupeBusy, setDupeBusy] = useState(null)
+  const [selectedDupeGroups, setSelectedDupeGroups] = useState(() => new Set())
 
   const [resumes, setResumes] = useState([])
   const [defaultResume, setDefaultResume] = useState('')
@@ -616,6 +617,14 @@ export default function App() {
     () => dupeGroups.reduce((n, g) => n + g.rows.length - 1, 0),
     [dupeGroups]
   )
+
+  useEffect(() => {
+    setSelectedDupeGroups((prev) => {
+      const live = new Set(dupeGroups.map((g) => g.key))
+      const next = new Set([...prev].filter((k) => live.has(k)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [dupeGroups])
 
   const visibleFiltered = useMemo(() => {
     const rows = pendingFiltered.filter((job) => {
@@ -911,6 +920,48 @@ export default function App() {
     },
     [keepers, fetchAll]
   )
+
+  const keptIdsFor = useCallback(
+    (group) =>
+      new Set(
+        (keepers[group.key] ?? [defaultKeeper(group)]).filter((id) =>
+          group.rows.some((r) => r.id === id)
+        )
+      ),
+    [keepers]
+  )
+
+  const markSelectedDupeGroups = useCallback(async () => {
+    const targets = dupeGroups.filter((g) => selectedDupeGroups.has(g.key))
+    if (!targets.length || dupeBusy) return
+    setDupeBusy('__bulk__')
+    try {
+      const ids = []
+      for (const g of targets) {
+        const kept = keptIdsFor(g)
+        for (const r of g.rows) if (!kept.has(r.id)) ids.push(r.id)
+      }
+      await Promise.all(
+        ids.map((id) =>
+          fetch(`${API}/jobs/${id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'DUPLICATE' }),
+          })
+        )
+      )
+      setKeepers((prev) => {
+        const next = { ...prev }
+        for (const g of targets) delete next[g.key]
+        return next
+      })
+      setSelectedDupeGroups(new Set())
+    } catch (e) {
+      console.error('mark selected duplicates failed:', e)
+    }
+    await fetchAll()
+    setDupeBusy(null)
+  }, [dupeGroups, selectedDupeGroups, dupeBusy, keptIdsFor, fetchAll])
 
   const handleScrape = useCallback(async () => {
     if (scraping) return
@@ -1449,6 +1500,42 @@ export default function App() {
             </span>
           </button>
           {showDupes && (
+          <div className="flex flex-wrap items-center gap-3 border-t border-amber-200 bg-amber-50/60 px-4 py-2.5 dark:border-amber-900 dark:bg-neutral-800/40">
+            <label className="flex items-center gap-2 text-xs font-medium text-neutral-700 dark:text-neutral-300">
+              <input
+                type="checkbox"
+                checked={selectedDupeGroups.size > 0 && selectedDupeGroups.size === dupeGroups.length}
+                onChange={() =>
+                  setSelectedDupeGroups((prev) =>
+                    prev.size === dupeGroups.length ? new Set() : new Set(dupeGroups.map((g) => g.key))
+                  )
+                }
+                title="Select all duplicate groups"
+                className="accent-neutral-800"
+              />
+              Select all ({selectedDupeGroups.size}/{dupeGroups.length})
+            </label>
+            {(() => {
+              const targets = dupeGroups.filter((g) => selectedDupeGroups.has(g.key))
+              const nRows = targets.reduce((n, g) => n + g.rows.length - keptIdsFor(g).size, 0)
+              return (
+                <button
+                  onClick={markSelectedDupeGroups}
+                  disabled={dupeBusy !== null || targets.length === 0}
+                  title="Mark unchecked rows DUPLICATE across all selected groups at once"
+                  className="ml-auto rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                >
+                  {dupeBusy === '__bulk__'
+                    ? 'Marking…'
+                    : targets.length === 0
+                      ? 'Tick groups to bulk-confirm'
+                      : `Confirm ${targets.length} group${targets.length === 1 ? '' : 's'} · mark ${nRows} DUPLICATE`}
+                </button>
+              )
+            })()}
+          </div>
+          )}
+          {showDupes && (
           <div className="divide-y divide-neutral-100 border-t border-amber-200 dark:divide-neutral-800 dark:border-amber-900">
             {dupeGroups.map((group) => {
               const keptIds = new Set(
@@ -1458,9 +1545,24 @@ export default function App() {
               )
               const nMark = group.rows.length - keptIds.size
               const busy = dupeBusy === group.key
+              const selected = selectedDupeGroups.has(group.key)
               return (
                 <div key={group.key} className="px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() =>
+                        setSelectedDupeGroups((prev) => {
+                          const next = new Set(prev)
+                          if (next.has(group.key)) next.delete(group.key)
+                          else next.add(group.key)
+                          return next
+                        })
+                      }
+                      title="Select this group for bulk confirm"
+                      className="accent-amber-600"
+                    />
                     <p className="text-sm font-medium text-neutral-800 dark:text-neutral-200">
                       {group.rows[0].title}{' '}
                       <span className="font-normal text-neutral-500 dark:text-neutral-400">

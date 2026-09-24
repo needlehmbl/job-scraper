@@ -14,16 +14,15 @@ export function normTitle(s) {
 }
 
 export function normCompany(s) {
+  // Mirrors backend dedupe.py normalize_company: strip "in the
+  // philippines" anywhere, then trailing legal/region suffixes
+  // repeatedly ("Acme Corp PH" -> "acme"), so UI groups match DB groups.
   let c = String(s || '').toLowerCase().trim()
-  // LinkedIn appends "in the Philippines" to local company names.
-  c = c.replace(/\s+in the philippines\s*$/, '').trim()
-  c = c.replace(/\s+philippines\s*$/, '').trim()
-  // Trailing corporate suffixes ("Acme, Inc." vs "Acme").
-  c = c.replace(/[\s,.]+(inc|corp|corporation|llc|ltd|co|company|pvt|plc|gmbh)\.?$/, '').trim()
-  return c
-    .replace(/[^a-z0-9 ]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  c = c.replace(/\s+in the philippines(?![a-z])/, ' ')
+  let toks = c.replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+  const suffix = new Set(['inc', 'incorporated', 'corp', 'corporation', 'co', 'company', 'ltd', 'limited', 'llc', 'plc', 'gmbh', 'pty', 'pvt', 'philippines', 'ph'])
+  while (toks.length && suffix.has(toks[toks.length - 1])) toks.pop()
+  return toks.join(' ')
 }
 
 export function groupKey(job) {
