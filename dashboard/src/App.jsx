@@ -19,7 +19,12 @@ const STATUSES = ['NEW', 'REVIEWED', 'SKIP', 'MISMATCH', 'EXP_GAP', 'EXPIRED', '
 const ALL_STATUSES = ['NEW', 'REVIEWED', 'APPLIED', 'SKIP', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
 // "No, I didn't apply" reasons offered in the post-Apply confirm strip.
 const NO_APPLY_REASONS = ['SKIP', 'EXP_GAP', 'MISMATCH', 'EXPIRED']
-const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'google', 'greenhouse', 'lever']
+const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'trabajo', 'google', 'greenhouse', 'lever']
+
+// Client-side pagination: rendering 300+ rich rows per state change is
+// what made the tables feel sluggish. 50 rows/page keeps every interaction
+// snappy; selection is id-based so it survives page turns.
+const PAGE_SIZE = 50
 
 // Hiring-funnel stages for APPLIED rows (separate axis from triage
 // status; a row carries a stage ⟺ its status is APPLIED).
@@ -141,6 +146,25 @@ function Highlight({ text, query }) {
       </mark>
       {s.slice(best + bestLen)}
     </>
+  )
+}
+
+function Pager({ page, total, onChange }) {
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  if (pages <= 1) return null
+  const btn = 'rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800'
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-neutral-200 px-4 py-2.5 text-sm text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+      <button className={btn} disabled={page <= 1} onClick={() => onChange(page - 1)}>
+        ← Prev
+      </button>
+      <span>
+        Page {page} of {pages} · {total} row{total === 1 ? '' : 's'}
+      </span>
+      <button className={btn} disabled={page >= pages} onClick={() => onChange(page + 1)}>
+        Next →
+      </button>
+    </div>
   )
 }
 
@@ -475,6 +499,9 @@ export default function App() {
   const [scraping, setScraping] = useState(false)
   const [scrapeNote, setScrapeNote] = useState('')
   const [tab, setTab] = useState('jobs')
+  const [jobsPage, setJobsPage] = useState(1)
+  const [appsPage, setAppsPage] = useState(1)
+  const [filtPage, setFiltPage] = useState(1)
   const [filteredJobs, setFilteredJobs] = useState([])
   const [scrapedDir, setScrapedDir] = useState(null) // null | 'desc' | 'asc'
   const [scoreDir, setScoreDir] = useState('desc') // null | 'desc' | 'asc' (default: best fit first)
@@ -561,6 +588,21 @@ export default function App() {
     return () => clearInterval(t)
   }, [fetchAll])
 
+  // Light refresh after single-row mutations: the optimistic update above
+  // already fixed local state, so only /jobs needs re-syncing. Stats,
+  // filtered, resumes and runs refresh on the 60s poll -- refetching all
+  // five endpoints per click is what made every button feel laggy.
+  const refreshJobs = useCallback(async () => {
+    try {
+      const r = await fetch(API + '/jobs')
+      const j = await r.json()
+      setJobs(j)
+      setSelected((prev) => prev.filter((id) => j.some((job) => job.id === id)))
+    } catch (e) {
+      console.error('dashboard jobs refresh failed:', e)
+    }
+  }, [])
+
   const bulkApplyStatus = useCallback(async () => {
     if (!bulkStatus || selected.length === 0 || bulkBusy) return
     setBulkBusy(true)
@@ -617,6 +659,14 @@ export default function App() {
     () => dupeGroups.reduce((n, g) => n + g.rows.length - 1, 0),
     [dupeGroups]
   )
+
+  // Keeper defaults, computed once per grouping -- defaultKeeper sorts, so
+  // calling it inline during render re-sorts every group on every render.
+  const dupeDefaults = useMemo(() => {
+    const m = new Map()
+    for (const g of dupeGroups) m.set(g.key, defaultKeeper(g))
+    return m
+  }, [dupeGroups])
 
   useEffect(() => {
     setSelectedDupeGroups((prev) => {
@@ -726,6 +776,24 @@ export default function App() {
     )
   }, [jobsBase, postedDir, scrapedDir, scoreDir])
 
+  // New tab or new filters → back to page 1 on every table.
+  useEffect(() => {
+    setJobsPage(1)
+    setAppsPage(1)
+    setFiltPage(1)
+  }, [tab, status, hidden, source, dateFrom, dateTo, search, filterReason, filterSource, appFilter, dueOnly])
+
+  // Clamped slices: page survives data refreshes, never points past the end.
+  const jobsPages = Math.max(1, Math.ceil(sortedJobs.length / PAGE_SIZE))
+  const jobsPageSafe = Math.min(jobsPage, jobsPages)
+  const jobsPageRows = sortedJobs.slice((jobsPageSafe - 1) * PAGE_SIZE, jobsPageSafe * PAGE_SIZE)
+  const appsPages = Math.max(1, Math.ceil(applicationRows.length / PAGE_SIZE))
+  const appsPageSafe = Math.min(appsPage, appsPages)
+  const appsPageRows = applicationRows.slice((appsPageSafe - 1) * PAGE_SIZE, appsPageSafe * PAGE_SIZE)
+  const filtPages = Math.max(1, Math.ceil(visibleFiltered.length / PAGE_SIZE))
+  const filtPageSafe = Math.min(filtPage, filtPages)
+  const filtPageRows = visibleFiltered.slice((filtPageSafe - 1) * PAGE_SIZE, filtPageSafe * PAGE_SIZE)
+
   const cycleScrapedSort = useCallback(() => {
     // Only one sort wins at a time.
     setScoreDir(null)
@@ -773,13 +841,13 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: nextStatus }),
         })
-        fetchAll()
+        refreshJobs()
       } catch (e) {
         console.error('status update failed:', e)
         fetchAll()
       }
     },
-    [updateJobs, fetchAll, confirmApplyId]
+    [updateJobs, fetchAll, refreshJobs, confirmApplyId]
   )
 
   const setFollowup = useCallback(
@@ -791,13 +859,13 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ follow_up_at: nextDate || null }),
         })
-        fetchAll()
+        refreshJobs()
       } catch (e) {
         console.error('follow-up update failed:', e)
         fetchAll()
       }
     },
-    [updateJobs, fetchAll]
+    [updateJobs, fetchAll, refreshJobs]
   )
 
   const setStage = useCallback(
@@ -809,13 +877,13 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ stage: nextStage }),
         })
-        fetchAll()
+        refreshJobs()
       } catch (e) {
         console.error('stage update failed:', e)
         fetchAll()
       }
     },
-    [updateJobs, fetchAll]
+    [updateJobs, fetchAll, refreshJobs]
   )
 
   const moveBackToJobs = useCallback(
@@ -829,6 +897,10 @@ export default function App() {
     const handleApply = useCallback(async (job) => {
       updateJobs(job.id, { status: 'REVIEWED' })
       setPendingApply(job.id)
+      // Show the confirm strip immediately -- the persist below is
+      // fire-and-forget; awaiting it is what delayed the popup ~1s.
+      setPendingApply(null)
+      setConfirmApplyId(job.id)
       try {
         window.open(job.url, '_blank')
       } catch (e) {
@@ -840,14 +912,13 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: 'REVIEWED' }),
         })
+        refreshJobs()
       } catch (e) {
         console.error('apply status persist failed:', e)
+        fetchAll()
       }
-      setPendingApply(null)
-      // Ask what actually happened: confirm the application, or file why not.
-      setConfirmApplyId(job.id)
     },
-    [updateJobs]
+    [updateJobs, refreshJobs, fetchAll]
   )
 
   const restoreFiltered = useCallback(
@@ -890,7 +961,7 @@ export default function App() {
   const markGroupDupe = useCallback(
     async (group) => {
       const kept = new Set(
-        (keepers[group.key] ?? [defaultKeeper(group)]).filter((id) =>
+        (keepers[group.key] ?? [dupeDefaults.get(group.key)]).filter((id) =>
           group.rows.some((r) => r.id === id)
         )
       )
@@ -918,17 +989,17 @@ export default function App() {
       await fetchAll()
       setDupeBusy(null)
     },
-    [keepers, fetchAll]
+    [keepers, dupeDefaults, fetchAll]
   )
 
   const keptIdsFor = useCallback(
     (group) =>
       new Set(
-        (keepers[group.key] ?? [defaultKeeper(group)]).filter((id) =>
+        (keepers[group.key] ?? [dupeDefaults.get(group.key)]).filter((id) =>
           group.rows.some((r) => r.id === id)
         )
       ),
-    [keepers]
+    [keepers, dupeDefaults]
   )
 
   const markSelectedDupeGroups = useCallback(async () => {
@@ -1538,11 +1609,7 @@ export default function App() {
           {showDupes && (
           <div className="divide-y divide-neutral-100 border-t border-amber-200 dark:divide-neutral-800 dark:border-amber-900">
             {dupeGroups.map((group) => {
-              const keptIds = new Set(
-                (keepers[group.key] ?? [defaultKeeper(group)]).filter((id) =>
-                  group.rows.some((r) => r.id === id)
-                )
-              )
+              const keptIds = keptIdsFor(group)
               const nMark = group.rows.length - keptIds.size
               const busy = dupeBusy === group.key
               const selected = selectedDupeGroups.has(group.key)
@@ -1587,7 +1654,7 @@ export default function App() {
                           onChange={() =>
                             setKeepers((prev) => {
                               const cur = new Set(
-                                (prev[group.key] ?? [defaultKeeper(group)]).filter((id) =>
+                                (prev[group.key] ?? [dupeDefaults.get(group.key)]).filter((id) =>
                                   group.rows.some((r) => r.id === id)
                                 )
                               )
@@ -1759,14 +1826,15 @@ export default function App() {
               No jobs match your filters.
             </div>
           ) : (
+            <>
             <table className="w-full text-left text-sm">
               <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
                 <tr>
                   <th className="w-10 px-4 py-3 font-medium">
                     <input
                       type="checkbox"
-                      checked={sortedJobs.length > 0 && sortedJobs.every((job) => selected.includes(job.id))}
-                      onChange={() => toggleSelectAll(sortedJobs)}
+                      checked={jobsPageRows.length > 0 && jobsPageRows.every((job) => selected.includes(job.id))}
+                      onChange={() => toggleSelectAll(jobsPageRows)}
                       title={selected.length ? 'Deselect these rows' : 'Select these rows'}
                       className="accent-neutral-800"
                     />
@@ -1806,7 +1874,7 @@ export default function App() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {sortedJobs.map((job) => (
+                {jobsPageRows.map((job) => (
                   <Fragment key={job.id}>
                   <tr className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
                     <td className="px-4 py-3">
@@ -1945,6 +2013,8 @@ export default function App() {
                 ))}
               </tbody>
             </table>
+            <Pager page={jobsPageSafe} total={sortedJobs.length} onChange={setJobsPage} />
+            </>
           )}
         </section>
         )}
@@ -1988,6 +2058,7 @@ export default function App() {
               will appear here with the reason they were dropped.
             </div>
           ) : (
+            <>
             <table className="w-full text-left text-sm">
               <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
                 <tr>
@@ -2019,7 +2090,7 @@ export default function App() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {visibleFiltered.map((job) => (
+                {filtPageRows.map((job) => (
                   <tr key={job.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
                     <td className="px-4 py-3">
                       <a
@@ -2101,6 +2172,8 @@ export default function App() {
                 ))}
               </tbody>
             </table>
+            <Pager page={filtPageSafe} total={visibleFiltered.length} onChange={setFiltPage} />
+            </>
           )}
         </section>
         )}
@@ -2155,6 +2228,7 @@ export default function App() {
               this tab, where you track its interview stage.
             </div>
           ) : (
+            <>
             <table className="w-full text-left text-sm">
               <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
                 <tr>
@@ -2167,12 +2241,14 @@ export default function App() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
-                {applicationRows.map((job) => (
+                {appsPageRows.map((job) => (
                   <ApplicationRow key={job.id} job={job} terms={parsedSearch.terms}
                     onStage={setStage} onMoveBack={moveBackToJobs} onChanged={fetchAll} onFollowup={setFollowup} />
                 ))}
               </tbody>
             </table>
+            <Pager page={appsPageSafe} total={applicationRows.length} onChange={setAppsPage} />
+            </>
           )}
         </section>
         )}
