@@ -1356,7 +1356,7 @@ export default function App() {
                   <Line type="monotone" dataKey="applied" name="Applied" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
                   <Line type="monotone" dataKey="rejected" name="Rejected" stroke="#f43f5e" strokeWidth={2} dot={{ r: 3 }} />
                   <Line type="monotone" dataKey="skipped" name="Skipped" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="mismatch" name="Mismatch" stroke="#fb923c" strokeWidth={2} dot={{ r: 3 }} />
+                  <Line type="monotone" dataKey="mismatch" name="Mismatch" stroke="#0ea5e9" strokeWidth={2} dot={{ r: 3 }} />
                   <Line type="monotone" dataKey="expgap" name="Exp. gap" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} />
                 </LineChart>
               </ResponsiveContainer>
