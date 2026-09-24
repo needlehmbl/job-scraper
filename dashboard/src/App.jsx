@@ -491,6 +491,7 @@ export default function App() {
   const [dateTo, setDateTo] = useState('')
   const [search, setSearch] = useState('')
   const [hidden, setHidden] = useState([])
+  const [hiddenSources, setHiddenSources] = useState([])
   const [selected, setSelected] = useState([])
   const [bulkStatus, setBulkStatus] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -533,6 +534,10 @@ export default function App() {
 
   const toggleHidden = useCallback((s) => {
     setHidden((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]))
+  }, [])
+
+  const toggleHiddenSource = useCallback((s) => {
+    setHiddenSources((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]))
   }, [])
 
   const toggleSelect = useCallback((id) => {
@@ -635,12 +640,15 @@ export default function App() {
       // explicit status is selected (the dropdown takes precedence).
       if (!status && hidden.includes(job.status)) return false
       if (source && job.source !== source) return false
+      // Negative source filter: hidden sources apply only when no
+      // explicit source is selected (the dropdown takes precedence).
+      if (!source && hiddenSources.includes(job.source)) return false
       if (dateFrom && String(job.date_posted || '').slice(0, 10) < dateFrom) return false
       if (dateTo && String(job.date_posted || '').slice(0, 10) > dateTo) return false
       if (!matchesSearch(job, parsedSearch)) return false
       return true
     })
-  }, [jobs, status, hidden, source, dateFrom, dateTo, parsedSearch])
+  }, [jobs, status, hidden, source, hiddenSources, dateFrom, dateTo, parsedSearch])
 
   const hiddenCounts = useMemo(() => {
     const counts = {}
@@ -781,7 +789,7 @@ export default function App() {
     setJobsPage(1)
     setAppsPage(1)
     setFiltPage(1)
-  }, [tab, status, hidden, source, dateFrom, dateTo, search, filterReason, filterSource, appFilter, dueOnly])
+  }, [tab, status, hidden, source, hiddenSources, dateFrom, dateTo, search, filterReason, filterSource, appFilter, dueOnly])
 
   // Clamped slices: page survives data refreshes, never points past the end.
   const jobsPages = Math.max(1, Math.ceil(sortedJobs.length / PAGE_SIZE))
@@ -1748,6 +1756,32 @@ export default function App() {
               </option>
             ))}
           </select>
+          <details className="relative rounded-lg border border-neutral-300 bg-white text-sm dark:border-neutral-700 dark:bg-neutral-800">
+            <summary className="cursor-pointer list-none px-3 py-1.5 text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-700 [&::-webkit-details-marker]:hidden">
+              {hiddenSources.length === 0 ? 'Hide sources' : `Hiding ${hiddenSources.length}`}
+            </summary>
+            <div className="absolute left-0 z-10 mt-1 min-w-44 rounded-lg border border-neutral-200 bg-white p-2 shadow-lg dark:border-neutral-700 dark:bg-neutral-900">
+              {SOURCES.map((s) => (
+                <label key={s} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800">
+                  <input
+                    type="checkbox"
+                    checked={!hiddenSources.includes(s)}
+                    onChange={() => toggleHiddenSource(s)}
+                    className="accent-neutral-800"
+                  />
+                  {s}
+                </label>
+              ))}
+              {hiddenSources.length > 0 && (
+                <button
+                  onClick={() => setHiddenSources([])}
+                  className="mt-1 w-full rounded px-2 py-1.5 text-left text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                >
+                  Show all
+                </button>
+              )}
+            </div>
+          </details>
           <label className="flex items-center gap-1.5 text-sm text-neutral-600 dark:text-neutral-400">
             From
             <input
