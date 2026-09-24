@@ -45,11 +45,14 @@ search:
   country_indeed: "Philippines"
 
   # JobSpy boards (indeed/linkedin/google) + custom JobStreet and
-  # Glassdoor scrapers (headless Chromium). ZipRecruiter is US/CA-only;
+  # Glassdoor scrapers (headless Chromium) + Trabajo.org aggregator
+  # (trabajo.py, plain HTTP -- no browser). ZipRecruiter is US/CA-only;
   # bayt/naukri/bdjobs are Middle East/India/Bangladesh-focused -- all
   # skipped for a Metro Manila search. Glassdoor's jobspy integration is
   # bot-walled (verified 2026-09-21), so `glassdoor` here routes to
-  # glassdoor.py instead -- keep it listed. Google Jobs currently returns
+  # glassdoor.py instead -- keep it listed. `trabajo` routes to
+  # trabajo.py (ph.trabajo.org aggregator, verified 2026-09-24).
+  # Google Jobs currently returns
   # zero rows upstream (JobSpy parser broken) -- the scrape warnings flag
   # it if so.
   site_names:
@@ -57,6 +60,7 @@ search:
     - "linkedin"
     - "jobstreet"
     - "glassdoor"
+    - "trabajo"
     # NOTE: "google" disabled -- JobSpy's Google parser returns 0 rows
     # upstream (broken), so listing it only burns 16 searches per run.
     # Re-enable when the parser is fixed.

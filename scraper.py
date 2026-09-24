@@ -5,6 +5,8 @@ applies keyword + experience filters, and returns a deduplicated DataFrame.
 JobStreet is not supported by jobspy, so it is handled separately by
 jobstreet.py (headless Chromium); Glassdoor's jobspy integration is
 bot-walled, so glassdoor.py renders its search pages the same way;
+Trabajo.org is an aggregator with plain server-rendered HTML, so
+trabajo.py pulls it with requests/BeautifulSoup (no browser);
 direct company boards (Greenhouse/Lever
 JSON APIs) are handled by greenhouse.py / lever.py. This module merges all
 frames in.
@@ -22,6 +24,7 @@ import glassdoor
 import greenhouse
 import jobstreet
 import lever
+import trabajo
 from locations import is_metro_manila, is_ph_or_metro
 
 # Last run's feedback-filter breakdown, filled by apply_feedback_filter
@@ -131,7 +134,7 @@ def normalize_url(url) -> str:
 # term x site searches and the four source blocks run in threads. Filters
 # are untouched -- this only overlaps waiting, never skips work.
 _JOBSPY_WORKERS = 6
-_SOURCE_WORKERS = 4
+_SOURCE_WORKERS = 5
 
 # Per-site throttle for jobspy calls. 2026-09-22: 6-wide parallel
 # LinkedIn searches drew "too many 429" rate-limiting (sequential runs
@@ -274,6 +277,23 @@ def _run_glassdoor_block(cfg: dict, s: dict, terms: list):
     return frames, notes
 
 
+def _run_trabajo_block(s: dict, terms: list):
+    """Trabajo.org aggregator block in a worker thread. Returns (frames, notes)."""
+    try:
+        t_df = trabajo.scrape_trabajo(
+            terms,
+            s["location"],
+            max_results=s.get("results_wanted", 50),
+            hours_old=s.get("hours_old"),
+        )
+    except Exception as e:
+        print(f"[scraper] WARNING: trabajo scrape failed: {e}")
+        return [], [("trabajo", 0, str(e))]
+    if t_df is not None and not t_df.empty:
+        return [t_df], [("trabajo", len(t_df), "")]
+    return [], [("trabajo", 0, "")]
+
+
 def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
     """Greenhouse/Lever board pulls. Returns (frames, notes)."""
     frames, notes = [], []
@@ -322,17 +342,19 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
             e["errors"].append(error[:160])
 
     # jobspy only knows its own providers; JobStreet and Glassdoor are
-    # scraped by jobstreet.py / glassdoor.py (headless Chromium).
+    # scraped by jobstreet.py / glassdoor.py (headless Chromium) and
+    # Trabajo.org by trabajo.py (plain HTTP -- aggregator HTML).
     sites = s.get("site_names", ["indeed", "linkedin"])
-    jobspy_sites = [x for x in sites if x not in ("jobstreet", "glassdoor")]
+    jobspy_sites = [x for x in sites if x not in ("jobstreet", "glassdoor", "trabajo")]
     use_jobstreet = "jobstreet" in sites
     use_glassdoor = "glassdoor" in sites
+    use_trabajo = "trabajo" in sites
     terms = s["search_terms"]
 
-    # All four source blocks are independent I/O-bound work (HTTP waits,
+    # All source blocks are independent I/O-bound work (HTTP waits,
     # browser page loads, Glassdoor cooldown sleeps), so they run
     # concurrently. Frames merge in fixed order (jobspy, jobstreet,
-    # glassdoor, boards) and every note() still happens on this thread,
+    # glassdoor, trabajo, boards) and every note() still happens on this thread,
     # so stats, warnings and within-run dedupe behave exactly as before.
     blocks: dict = {}
     with ThreadPoolExecutor(max_workers=_SOURCE_WORKERS) as pool:
@@ -343,10 +365,12 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
             futs[pool.submit(_run_jobstreet_block, s, terms)] = "jobstreet"
         if use_glassdoor:
             futs[pool.submit(_run_glassdoor_block, cfg, s, terms)] = "glassdoor"
+        if use_trabajo:
+            futs[pool.submit(_run_trabajo_block, s, terms)] = "trabajo"
         futs[pool.submit(_run_boards_block, cfg, s, seen_urls)] = "boards"
         for f in as_completed(futs):
             blocks[futs[f]] = f.result()
-    for name in ("jobspy", "jobstreet", "glassdoor", "boards"):
+    for name in ("jobspy", "jobstreet", "glassdoor", "trabajo", "boards"):
         frames, notes = blocks.get(name, ([], []))
         all_frames.extend(frames)
         for source, rows, error in notes:
@@ -367,7 +391,7 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     # cross-link fingerprint (normalized company|title) so the same
     # listing scraped with a different job ID / board URL collapses to
     # one row. First-seen wins (frames merge jobspy, jobstreet,
-    # glassdoor, boards in fixed order).
+    # glassdoor, trabajo, boards in fixed order).
     if "job_url" in combined.columns:
         combined = combined[combined["job_url"].notna() & combined["job_url"].ne("")]
         combined["_urlkey"] = combined["job_url"].map(normalize_url)
