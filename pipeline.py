@@ -182,20 +182,49 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         print(f"[pipeline] WARNING: could not load resume bank ({e}); scoring neutral.")
         bank_low = ""
 
+    try:
+        import dedupe as dedupe_mod
+        known_fps = db.known_fingerprints()
+    except Exception as e:
+        print(f"[pipeline] WARNING: could not load stored fingerprints ({e}).")
+        import dedupe as dedupe_mod
+        known_fps = {}
     added = 0
+    dup_fp = 0
     for _, job in jobs.iterrows():
         row = _jrow(job, bank_low)
+        fp = dedupe_mod.row_fingerprint(row)
+        if fp and fp in known_fps:
+            try:
+                db.touch_last_seen(known_fps[fp]["id"])
+            except Exception as e:
+                print(f"[pipeline] WARNING: could not touch last_seen: {e}")
+            dup_fp += 1
+            continue
         existing = db.find_existing(row)
         if existing is not None:
             try:
                 db.touch_last_seen(existing["id"])
             except Exception as e:
                 print(f"[pipeline] WARNING: could not touch last_seen: {e}")
+            if fp:
+                known_fps[fp] = {"id": existing["id"], "url": existing.get("url", "")}
             continue
         if db.upsert_job(row):
             added += 1
+            if fp and fp not in known_fps:
+                # keep the in-run map fresh so a repost later in the same
+                # batch (different URL) also collapses without a DB round-trip
+                try:
+                    _hit = db.find_existing(row)
+                    if _hit is not None:
+                        known_fps[fp] = {"id": _hit["id"], "url": _hit.get("url", "")}
+                except Exception:
+                    pass
             if legacy_xlsx:
                 df = tracker.upsert(df, _xrow(job))
+    if dup_fp:
+        print(f"[pipeline] fingerprint dedup: {dup_fp} reposts already tracked (last_seen refreshed).")
 
     if legacy_xlsx:
         tracker.save(df, sheet_path)

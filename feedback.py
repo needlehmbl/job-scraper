@@ -235,7 +235,26 @@ def learn_patterns(decisions: list[dict], fc: dict) -> dict:
     bad = [d for d in decisions if d.get("status") in BAD]
     patterns: dict = {"keywords": [], "phrases": [], "companies": [],
                        "locations": [], "desc_skills": [],
+                       "seen_fingerprints": {},
                        "n_good": len(good), "n_bad": len(bad)}
+    # Exact-listing memory: every decided posting's company|title
+    # fingerprint. A repost under a different job ID / URL is still the
+    # same listing you already judged -- apply_heuristic drops it before
+    # any token logic runs. Covers GOOD too (already applied/reviewed must
+    # never come back as NEW).
+    try:
+        import dedupe as _dedupe_mod
+        for d in decisions:
+            _fp = _dedupe_mod.fingerprint(d.get("title", ""), d.get("company", ""))
+            if _fp and _fp not in patterns["seen_fingerprints"]:
+                patterns["seen_fingerprints"][_fp] = {
+                    "status": d.get("status", ""),
+                    "title": (d.get("title") or "").strip(),
+                    "company": (d.get("company") or "").strip(),
+                    "location": (d.get("location") or "").strip(),
+                }
+    except Exception:
+        pass
     if len(decisions) < fc["min_samples"]:
         return patterns
 
@@ -446,17 +465,33 @@ def apply_heuristic(df, patterns: dict):
         return df, 0, [], df.head(0) if df is not None else df
     if not patterns["keywords"] and not patterns.get("phrases") \
             and not patterns["companies"] and not patterns.get("locations") \
-            and not patterns.get("desc_skills"):
+            and not patterns.get("desc_skills") \
+            and not patterns.get("seen_fingerprints"):
         return df, 0, [], df.head(0)
     kw = set(patterns["keywords"])
     phrs = set(patterns.get("phrases", []))
     comps = set(patterns["companies"])
     locs = set(patterns.get("locations", []))
+    seen_fps = patterns.get("seen_fingerprints") or {}
     lex = _lexicon()
     dskill_aliases = {s: lex.get(s, [s.lower()])
                       for s in patterns.get("desc_skills", [])}
 
+    def _fp_of(row) -> str:
+        try:
+            import dedupe as _dd
+            return _dd.row_fingerprint({
+                "title": _cell(row.get("title")),
+                "company": _cell(row.get("company")),
+            })
+        except Exception:
+            return ""
+
     def bad_row(row) -> str | None:
+        _fp = _fp_of(row)
+        if _fp and _fp in seen_fps:
+            _info = seen_fps[_fp]
+            return f"repeat-seen:{str(_info.get('status', '')).lower()}:{(_info.get('company') or '')[:40]}|{(_info.get('title') or '')[:40]}"
         # NCR-blind: a posting inside Metro Manila is never dropped for
         # location, even when an older learned pattern still names its
         # token (e.g. location:quezon learned before this guard existed).
@@ -1065,13 +1100,15 @@ def apply_feedback(df, cfg: dict, report: dict | None = None,
 
     patterns = learn_patterns(decisions, fc)
     if patterns["keywords"] or patterns.get("phrases") or patterns["companies"] \
-            or patterns.get("locations") or patterns.get("desc_skills"):
+            or patterns.get("locations") or patterns.get("desc_skills") \
+            or patterns.get("seen_fingerprints"):
         print(f"[feedback] learned from {len(decisions)} decisions "
               f"({n_good} good / {n_bad} bad): "
               f"keywords={patterns['keywords']} phrases={patterns.get('phrases', [])} "
               f"companies={patterns['companies']} "
               f"locations={patterns.get('locations', [])} "
-              f"desc_skills={patterns.get('desc_skills', [])}")
+              f"desc_skills={patterns.get('desc_skills', [])} "
+              f"seen_listings={len(patterns.get('seen_fingerprints') or {})}")
     df, n_heur, heur_reasons, dropped_heur = apply_heuristic(df, patterns)
     if n_heur:
         print(f"[feedback] heuristic dropped {n_heur} postings matching reject patterns.")

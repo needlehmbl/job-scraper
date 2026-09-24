@@ -363,7 +363,11 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
 
     combined = pd.concat(all_frames, ignore_index=True)
 
-    # Dedup within this run via normalized URL (falls back to title+company).
+    # Dedup within this run: exact normalized URL first, then the
+    # cross-link fingerprint (normalized company|title) so the same
+    # listing scraped with a different job ID / board URL collapses to
+    # one row. First-seen wins (frames merge jobspy, jobstreet,
+    # glassdoor, boards in fixed order).
     if "job_url" in combined.columns:
         combined = combined[combined["job_url"].notna() & combined["job_url"].ne("")]
         combined["_urlkey"] = combined["job_url"].map(normalize_url)
@@ -376,6 +380,24 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
             )
     else:
         combined = combined.drop_duplicates(subset=["title", "company", "location"])
+    try:
+        import dedupe as _dedupe_mod
+        if not combined.empty and "title" in combined.columns and "company" in combined.columns:
+            _fp = combined.apply(
+                lambda r: _dedupe_mod.row_fingerprint(r), axis=1)
+            combined = combined.assign(_fpkey=_fp)
+            _has_fp = combined[combined["_fpkey"].ne("")]
+            _no_fp = combined[combined["_fpkey"].eq("")]
+            if not _has_fp.empty:
+                before = len(combined)
+                _has_fp = _has_fp.drop_duplicates(subset=["_fpkey"])
+                combined = pd.concat([_has_fp, _no_fp], ignore_index=True)
+                _dup = before - len(combined)
+                if _dup:
+                    print(f"[scraper] fingerprint dedup: dropped {_dup} same-listing rows.")
+            combined = combined.drop(columns=["_fpkey"], errors="ignore")
+    except Exception as e:
+        print(f"[scraper] WARNING: fingerprint dedup failed ({e}); keeping URL-deduped rows.")
 
     combined = apply_keyword_filters(combined, s)
     combined = apply_feedback_filter(combined, cfg, seen_urls)

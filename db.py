@@ -37,6 +37,27 @@ def known_urls(conn=None) -> set:
         return {r[0] for r in cur.fetchall() if r[0]}
 
 
+def known_fingerprints(conn=None) -> dict:
+    """Map cross-link fingerprint -> jobs row id (one cheap query per run).
+
+    Fingerprint = normalized company|title (see dedupe.py): catches the
+    same listing re-scraped under a different job ID / board URL, which
+    the UNIQUE(url) constraint can never see. Location is not part of the
+    key (NCR formatting variants like "Taguig" vs "Taguig City, Metro
+    Manila" are the same listing).
+    """
+    import dedupe as dedupe_mod
+    conn = conn or connect()
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, title, company, url FROM jobs")
+        out = {}
+        for jid, title, company, url in cur.fetchall():
+            fp = dedupe_mod.fingerprint(title, company)
+            if fp and fp not in out:
+                out[fp] = {"id": jid, "url": url}
+        return out
+
+
 def find_existing(row: dict, conn=None):
     """Return the tracker DB row matching a scraped job, or None.
 
@@ -63,7 +84,30 @@ def find_existing(row: dict, conn=None):
             (row.get("title", ""), row.get("company", ""), row.get("location", "")),
         )
         r = cur.fetchone()
-        return dict(r) if r else None
+        if r:
+            return dict(r)
+        # Cross-link fallback: same listing, different URL. Matches on the
+        # normalized company|title fingerprint so reposts with new job IDs
+        # (Indeed ?jk=, LinkedIn /view/<id>) resolve to the stored row.
+        try:
+            import dedupe as dedupe_mod
+            fp = dedupe_mod.fingerprint(row.get("title", ""), row.get("company", ""))
+            if fp:
+                cur.execute("SELECT id, title, company FROM jobs")
+                for cand in cur.fetchall():
+                    # RealDictCursor row (dict), not a tuple
+                    jid = cand["id"] if isinstance(cand, dict) else cand[0]
+                    title = cand["title"] if isinstance(cand, dict) else cand[1]
+                    company = cand["company"] if isinstance(cand, dict) else cand[2]
+                    if dedupe_mod.fingerprint(title, company) == fp:
+                        cur.execute("SELECT * FROM jobs WHERE id = %s", (jid,))
+                        hit = cur.fetchone()
+                        if hit:
+                            return dict(hit)
+                        break
+        except Exception:
+            pass
+        return None
 
 
 def upsert_job(row: dict, conn=None) -> bool:
