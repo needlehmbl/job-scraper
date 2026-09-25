@@ -1,0 +1,47 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - run: cd dashboard && npm ci && npm run build
+      - run: >
+          tar -czf jobscraper-linux.tar.gz docker-compose.yml Dockerfile
+          .dockerignore run.sh stop.sh setup.sh setup_wizard.py launcher.py
+          JobScraper.desktop schema.sql config.yaml .env.example
+          dashboard/dist README.md
+      - uses: actions/upload-artifact@v4
+        with: {name: linux-tarball, path: jobscraper-linux.tar.gz}
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - run: cd dashboard; npm ci; npm run build
+      - run: pip install -r requirements.txt pyinstaller
+      - run: python -m playwright install chromium
+      - run: pyinstaller --noconfirm installer/JobScraper.spec
+        env: {APP_VERSION: "${{ github.ref_name }}"}
+      - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
+      - run: iscc installer/jobscraper.iss
+        env: {APP_VERSION: "${{ github.ref_name }}"}
+      - run: Compress-Archive -Path dist/JobScraper -DestinationPath jobscraper-win64.zip
+      - uses: actions/upload-artifact@v4
+        with: {name: windows-assets, path: "JobScraper-Setup-*.exe, jobscraper-win64.zip"}
+  publish:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: {path: assets, merge-multiple: true}
+      - run: cd assets && sha256sum * > sha256sums.txt
+      - uses: softprops/action-gh-release@v2
+        with: {files: "assets/*"}

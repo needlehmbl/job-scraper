@@ -63,6 +63,58 @@ does not contain them; the unit files live in `~/.config/systemd/user/`.
 
 ## 2. Setup
 
+### Easiest: download a release (no code needed)
+
+Grab the latest release from the
+[Releases page](https://github.com/needlehmbl/job-auto-apply/releases)
+— each release ships `JobScraper-Setup-v*.exe`, `jobscraper-win64.zip`,
+`jobscraper-linux.tar.gz`, and `sha256sums.txt`.
+
+**Windows — installer or portable, pick one:**
+
+| | Installer (recommended) | Portable zip |
+|---|---|---|
+| File | `JobScraper-Setup-v*.exe` | `jobscraper-win64.zip` |
+| Install | Double-click the `.exe` and follow the prompts (desktop shortcut included) | Extract the zip anywhere and double-click `JobScraper.exe` |
+| Needs | Nothing extra — Python, the browser driver, and the dashboard are bundled | Nothing extra — same bundle, no install step |
+| Best for | Most people | USB sticks / PCs where you can't install software |
+
+> **SmartScreen note:** the installer is unsigned, so Windows may show
+> "Windows protected your PC". Click **More info → Run anyway** — that
+> warning is expected for a small open-source project without a paid
+> signing certificate. The portable zip skips the installer entirely
+> (SmartScreen may still ask once about the `.exe` inside).
+
+**Linux (tarball):**
+
+```bash
+tar -xzf jobscraper-linux.tar.gz
+cd jobscraper-linux          # or wherever you extracted it
+./setup.sh                   # wizard + desktop shortcut + database (needs Docker)
+```
+
+`setup.sh` runs the same beginner-friendly wizard as the Windows
+installer: search terms, location, and job boards (prefilled with sensible
+defaults), an optional free OpenRouter key for smarter filtering (with
+**Test** and **Skip** buttons — the scraper works fine without one), then
+it installs what's missing and prepares the database. It also adds a
+JobScraper icon to your app menu. Stuck? `./setup.sh --check` diagnoses
+your install and explains each missing piece in plain language.
+
+### Updating (keeps everything)
+
+Your searches, statuses, resumes, and database are never touched by an
+update:
+
+- *Windows (installer):* download the new `JobScraper-Setup-v*.exe` and
+  run it — it installs over the same folder and keeps your settings.
+- *Windows (portable):* extract the new `jobscraper-win64.zip` over the
+  old folder (keep your `.env` and data files when asked).
+- *Linux:* `./setup.sh --upgrade jobscraper-linux.tar.gz` — installs the
+  new files, keeps your config and database.
+
+### Developer setup (from source)
+
 ```bash
 # Postgres (native, no Docker)
 sudo pacman -S postgresql              # Arch/Omarchy
@@ -88,10 +140,22 @@ New columns (`score`, `last_seen`, `follow_up_at`, …) migrate
 automatically via `ensure_tracking_schema()` on the next scrape or API
 start — no manual `ALTER TABLE` needed.
 
+
 ## 3. Run it
 
+### Easiest
+
+- *Windows:* open JobScraper from the desktop shortcut (or double-click
+  `JobScraper.exe` in the portable folder). The app opens in your default
+  browser automatically. To stop, use the power button in the dashboard
+  header or just close the app window.
+- *Linux:* `./run.sh` starts everything and opens your default browser;
+  `./stop.sh` stops it.
+
+Then scrape from the dashboard — no terminal needed:
+
 ```bash
-./run_and_open.sh                      # ensure servers are up + open dashboard (no scraping)
+./run.sh   # beginner path (Docker) — or ./run_and_open.sh for the native/systemd path below
 ```
 
 Scraping is done from the dashboard: open `http://localhost:5173` and hit
@@ -101,6 +165,8 @@ as `main.py` (via `pipeline.py`) in the background — the button shows
 table refreshes automatically with a `+N new` note when it finishes. Starting
 a second scrape while one is running returns `409` and the button waits for
 the in-flight run instead.
+
+### From source (systemd / native)
 
 Or run the pieces by hand if you'd rather not use systemd:
 
