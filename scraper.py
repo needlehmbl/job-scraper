@@ -38,6 +38,72 @@ last_feedback_report: dict = {}
 # silently-changed site layout surfaces instead of looking like "no jobs".
 last_source_report: dict = {}
 
+# Live scrape progress for the dashboard's "Scrape new jobs" button.
+# Updated from worker threads during scrape(); read via get_progress().
+# Shape: {"phase", "source", "term", "detail", "done", "total"}.
+_progress_lock = threading.Lock()
+_progress: dict = {
+    "phase": "idle",
+    "source": "",
+    "term": "",
+    "detail": "",
+    "done": 0,
+    "total": 0,
+}
+
+
+def reset_progress(total: int = 0, phase: str = "starting"):
+    """Reset the progress counters at the start of a scrape()."""
+    with _progress_lock:
+        _progress.update({
+            "phase": phase,
+            "source": "",
+            "term": "",
+            "detail": "",
+            "done": 0,
+            "total": int(total or 0),
+        })
+
+
+def set_progress(phase: str, source: str = "", term: str = "",
+                 detail: str = ""):
+    """Set the current stage; preserves done/total counters."""
+    with _progress_lock:
+        _progress.update({
+            "phase": phase,
+            "source": source,
+            "term": term,
+            "detail": detail,
+        })
+
+
+def bump_progress(n: int = 1, phase: str | None = None,
+                  source: str | None = None, term: str | None = None,
+                  detail: str | None = None):
+    """Advance done by n, optionally updating the stage labels."""
+    with _progress_lock:
+        _progress["done"] = int(_progress.get("done", 0) or 0) + n
+        if phase is not None:
+            _progress["phase"] = phase
+        if source is not None:
+            _progress["source"] = source
+        if term is not None:
+            _progress["term"] = term
+        if detail is not None:
+            _progress["detail"] = detail
+
+
+def extend_total(n: int):
+    """Grow the total step count (e.g. once the save-phase size is known)."""
+    with _progress_lock:
+        _progress["total"] = int(_progress.get("total", 0) or 0) + int(n or 0)
+
+
+def get_progress() -> dict:
+    """Thread-safe snapshot of the current scrape progress."""
+    with _progress_lock:
+        return dict(_progress)
+
 
 def load_config(path="config.yaml"):
     with open(path) as f:
@@ -208,6 +274,8 @@ def _run_jobspy_block(s: dict, terms: list, jobspy_sites: list):
     if not tasks:
         return [], []
     results: dict = {}
+    set_progress("scraping job boards (jobspy)", source=", ".join(jobspy_sites),
+                 term=terms[0] if terms else "")
     with ThreadPoolExecutor(max_workers=min(_JOBSPY_WORKERS, len(tasks))) as pool:
         futs = {pool.submit(
             _jobspy_one, site, term, _jobspy_kwargs(s, site, term)): (ti, si, site, term)
@@ -219,6 +287,8 @@ def _run_jobspy_block(s: dict, terms: list, jobspy_sites: list):
             except Exception as e:  # never lose a search to a worker crash
                 df, err = None, f"{term}: {e}"
             results[(ti, si)] = (df, err)
+            bump_progress(1, phase="scraping job boards (jobspy)",
+                          source=site, term=term)
     frames, notes = [], []
     for ti, term in enumerate(terms):
         for si, site in enumerate(jobspy_sites):
@@ -237,6 +307,8 @@ def _run_jobspy_block(s: dict, terms: list, jobspy_sites: list):
 
 def _run_jobstreet_block(s: dict, terms: list):
     """JobStreet browser block in a worker thread. Returns (frames, notes)."""
+    set_progress("scraping JobStreet (browser)", source="jobstreet",
+                 term=f"{len(terms)} search terms")
     try:
         js_df = jobstreet.scrape_jobstreet(
             terms,
@@ -249,7 +321,11 @@ def _run_jobstreet_block(s: dict, terms: list):
         if "Executable doesn't exist" in str(e):
             print("[scraper] HINT: Playwright's browser build is missing -- run "
                   "'venv/bin/python -m playwright install chromium' to fix.")
+        bump_progress(1, phase="scraping JobStreet (browser)",
+                      source="jobstreet", term="failed")
         return [], [("jobstreet", 0, str(e))]
+    bump_progress(1, phase="scraping JobStreet (browser)",
+                  source="jobstreet", term="done")
     if js_df is not None and not js_df.empty:
         return [js_df], [("jobstreet", len(js_df), "")]
     return [], [("jobstreet", 0, "")]
@@ -257,6 +333,8 @@ def _run_jobstreet_block(s: dict, terms: list):
 
 def _run_glassdoor_block(cfg: dict, s: dict, terms: list):
     """Glassdoor browser block in a worker thread. Returns (frames, notes)."""
+    set_progress("scraping Glassdoor (browser)", source="glassdoor",
+                 term=f"{len(terms)} search terms")
     try:
         g_df, g_stats = glassdoor.scrape_glassdoor(
             terms,
@@ -269,7 +347,11 @@ def _run_glassdoor_block(cfg: dict, s: dict, terms: list):
         if "Executable doesn't exist" in str(e):
             print("[scraper] HINT: Playwright's browser build is missing -- run "
                   "'venv/bin/python -m playwright install chromium' to fix.")
+        bump_progress(1, phase="scraping Glassdoor (browser)",
+                      source="glassdoor", term="failed")
         return [], [("glassdoor", 0, str(e))]
+    bump_progress(1, phase="scraping Glassdoor (browser)",
+                  source="glassdoor", term="done")
     frames = [g_df] if g_df is not None and not g_df.empty else []
     notes = [("glassdoor", n, "") for _, n in (g_stats or {}).items()]
     if g_df is not None and g_df.empty and not g_stats:
@@ -279,6 +361,8 @@ def _run_glassdoor_block(cfg: dict, s: dict, terms: list):
 
 def _run_trabajo_block(s: dict, terms: list):
     """Trabajo.org aggregator block in a worker thread. Returns (frames, notes)."""
+    set_progress("scraping Trabajo.org", source="trabajo",
+                 term=f"{len(terms)} search terms")
     try:
         t_df = trabajo.scrape_trabajo(
             terms,
@@ -288,7 +372,11 @@ def _run_trabajo_block(s: dict, terms: list):
         )
     except Exception as e:
         print(f"[scraper] WARNING: trabajo scrape failed: {e}")
+        bump_progress(1, phase="scraping Trabajo.org",
+                      source="trabajo", term="failed")
         return [], [("trabajo", 0, str(e))]
+    bump_progress(1, phase="scraping Trabajo.org",
+                  source="trabajo", term="done")
     if t_df is not None and not t_df.empty:
         return [t_df], [("trabajo", len(t_df), "")]
     return [], [("trabajo", 0, "")]
@@ -301,6 +389,8 @@ def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
         slugs = (cfg.get("company_boards") or {}).get(label, [])
         if not slugs:
             continue
+        set_progress(f"scraping {label} boards", source=label,
+                     term=f"{len(slugs)} boards")
         try:
             if label == "greenhouse":
                 b_df = mod.scrape_greenhouse(
@@ -325,6 +415,8 @@ def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
             notes.append((label, len(b_df), ""))
         elif b_df is not None:
             notes.append((label, 0, ""))
+    bump_progress(1, phase="scraping company boards",
+                  source="greenhouse/lever", term="done")
     return frames, notes
 
 
@@ -351,6 +443,14 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     use_trabajo = "trabajo" in sites
     terms = s["search_terms"]
 
+    # Progress total: one step per jobspy term x site search, one per
+    # browser/aggregator/boards block, plus 3 for merge/dedupe/filter.
+    # The dashboard polls this via GET /scrape/status.
+    _total = (len(terms) * len(jobspy_sites)
+              + int(use_jobstreet) + int(use_glassdoor)
+              + int(use_trabajo) + 1 + 3)
+    reset_progress(_total, phase="starting scrape")
+
     # All source blocks are independent I/O-bound work (HTTP waits,
     # browser page loads, Glassdoor cooldown sleeps), so they run
     # concurrently. Frames merge in fixed order (jobspy, jobstreet,
@@ -370,6 +470,8 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
         futs[pool.submit(_run_boards_block, cfg, s, seen_urls)] = "boards"
         for f in as_completed(futs):
             blocks[futs[f]] = f.result()
+            set_progress(f"waiting on sources ({len(blocks)}/{len(futs)} blocks done)",
+                         source=futs[f], detail="merging results")
     for name in ("jobspy", "jobstreet", "glassdoor", "trabajo", "boards"):
         frames, notes = blocks.get(name, ([], []))
         all_frames.extend(frames)
@@ -383,7 +485,12 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
                   f"{st['terms']} searches -- the site layout may have changed.")
 
     if not all_frames:
+        set_progress("done — no jobs found", detail="0 rows from all sources")
+        bump_progress(3)  # merge/dedupe/filter steps skipped
         return pd.DataFrame()
+
+    set_progress("merging + deduping results", detail=f"{len(all_frames)} frames")
+    bump_progress(1, phase="merging + deduping results")
 
     combined = pd.concat(all_frames, ignore_index=True)
 
@@ -424,7 +531,15 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
         print(f"[scraper] WARNING: fingerprint dedup failed ({e}); keeping URL-deduped rows.")
 
     combined = apply_keyword_filters(combined, s)
+    bump_progress(1, phase="applying keyword + experience filters",
+                  detail=f"{len(combined)} rows kept")
+    set_progress("applying learned feedback filters",
+                 detail=f"{len(combined)} rows in")
     combined = apply_feedback_filter(combined, cfg, seen_urls)
+    bump_progress(1, phase="applying learned feedback filters",
+                  detail=f"{len(combined)} rows kept")
+    set_progress("scraping done — handing off to save phase",
+                 detail=f"{len(combined)} rows")
     return combined.reset_index(drop=True)
 
 

@@ -117,6 +117,8 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
     """
     started = datetime.now(timezone.utc)
     cfg = load_config()
+    scraper_mod.set_progress("loading previous results",
+                             detail="reading known URLs from Postgres")
     try:
         db.ensure_tracking_schema()
         db.ensure_filtered_schema()
@@ -128,6 +130,9 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         print(f"[pipeline] WARNING: could not load stored URLs ({e}); "
               f"no fetch/AI skipping this run.")
         seen_urls = set()
+    scraper_mod.set_progress("scraping job boards",
+                             detail=f"{len(cfg['search']['search_terms'])} terms × "
+                             f"{len(cfg['search'].get('site_names', []))} sources")
     jobs = scrape(cfg, seen_urls=seen_urls)
     print(f"[pipeline] {len(jobs)} jobs after scraping + filters")
     src_report = dict(getattr(scraper_mod, "last_source_report", {}) or {})
@@ -137,6 +142,12 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         for source, st in sorted(src_report.items())
         if st.get("terms") and not st.get("rows")
     ]
+    # Flat error list for the dashboard's result modal (per-source errors,
+    # truncated at the scraper level already).
+    errors = []
+    for source, st in sorted(src_report.items()):
+        for err in (st.get("errors") or []):
+            errors.append(f"{source}: {err}")
     for w in warnings:
         print(f"[pipeline] WARNING: {w}")
     fb = dict(getattr(scraper_mod, "last_feedback_report", {}) or {})
@@ -167,10 +178,12 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         )
         with open(cfg["paths"]["runs_log"], "a") as f:
             f.write(summary + "\n")
+        scraper_mod.set_progress("done — no new jobs", detail=summary)
         return {"added": 0, "scraped": 0, "summary": "no jobs found",
                 "filtered": filtered, "filter_reasons": top_reasons,
                 "filtered_saved": filtered_saved,
-                "source_stats": src_report, "warnings": warnings}
+                "source_stats": src_report, "warnings": warnings,
+                "errors": errors}
 
     sheet_path = cfg["paths"]["tracker_sheet"]
     df = tracker.load_or_init(sheet_path) if legacy_xlsx else None
@@ -191,7 +204,14 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
         known_fps = {}
     added = 0
     dup_fp = 0
-    for _, job in jobs.iterrows():
+    total_jobs = len(jobs)
+    scraper_mod.extend_total(total_jobs)
+    for i, (_, job) in enumerate(jobs.iterrows()):
+        if i % 10 == 0 or i + 1 == total_jobs:
+            scraper_mod.bump_progress(1, phase="scoring + saving to Postgres",
+                                      detail=f"saving {i + 1}/{total_jobs}")
+        else:
+            scraper_mod.bump_progress(1)
         row = _jrow(job, bank_low)
         fp = dedupe_mod.row_fingerprint(row)
         if fp and fp in known_fps:
@@ -246,7 +266,9 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
     with open(run_log, "a") as f:
         f.write(summary + "\n")
 
+    scraper_mod.set_progress("done", detail=summary)
     return {"added": added, "scraped": len(jobs), "summary": summary,
             "filtered": filtered, "filter_reasons": top_reasons,
             "filtered_saved": filtered_saved,
-            "source_stats": src_report, "warnings": warnings}
+            "source_stats": src_report, "warnings": warnings,
+            "errors": errors}

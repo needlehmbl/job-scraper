@@ -499,6 +499,11 @@ export default function App() {
   const [confirmApplyId, setConfirmApplyId] = useState(null)
   const [scraping, setScraping] = useState(false)
   const [scrapeNote, setScrapeNote] = useState('')
+  const [scrapeProgress, setScrapeProgress] = useState(null)
+  const [scrapeStartedAt, setScrapeStartedAt] = useState(null)
+  const [scrapeElapsed, setScrapeElapsed] = useState(0)
+  const [scrapeResult, setScrapeResult] = useState(null)
+  const [showScrapeModal, setShowScrapeModal] = useState(false)
   const [tab, setTab] = useState('jobs')
   const [jobsPage, setJobsPage] = useState(1)
   const [appsPage, setAppsPage] = useState(1)
@@ -1042,10 +1047,39 @@ export default function App() {
     setDupeBusy(null)
   }, [dupeGroups, selectedDupeGroups, dupeBusy, keptIdsFor, fetchAll])
 
+function formatScrapeElapsed(sec) {
+  const s = Math.max(0, Math.floor(sec || 0))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+}
+
+function describeScrapeProgress(p) {
+  if (!p) return 'Starting scrape…'
+  const bits = []
+  if (p.phase) bits.push(p.phase)
+  if (p.source) bits.push(`· ${p.source}`)
+  if (p.term) bits.push(`— “${p.term}”`)
+  let s = bits.join(' ') || 'Scraping…'
+  if (p.total > 0) s += ` (${p.done ?? 0}/${p.total})`
+  if (p.detail) s += ` · ${p.detail}`
+  return s
+}
+
   const handleScrape = useCallback(async () => {
     if (scraping) return
     setScraping(true)
     setScrapeNote('Starting scrape…')
+    setScrapeProgress(null)
+    setScrapeResult(null)
+    setShowScrapeModal(false)
+    const t0 = Date.now()
+    setScrapeStartedAt(t0)
+    setScrapeElapsed(0)
+    const elapsedTimer = setInterval(() => {
+      setScrapeElapsed((Date.now() - t0) / 1000)
+    }, 1000)
     try {
       const startRes = await fetch(`${API}/scrape`, {
         method: 'POST',
@@ -1060,11 +1094,17 @@ export default function App() {
         setScrapeNote('Scraping new jobs… you can keep reviewing while it runs.')
       }
       // Poll until the background scrape finishes, then refresh.
+      // 1s cadence keeps the stage / term / progress bar feeling live.
       for (;;) {
-        await new Promise((r) => setTimeout(r, 3000))
+        await new Promise((r) => setTimeout(r, 1000))
         const sRes = await fetch(`${API}/scrape/status`)
         const s = await sRes.json()
         if (s.state === 'running' || s.state === 'idle') {
+          if (s.progress) {
+            setScrapeProgress(s.progress)
+            const elapsed = formatScrapeElapsed((Date.now() - t0) / 1000)
+            setScrapeNote(`[${elapsed}] ${describeScrapeProgress(s.progress)}`)
+          }
           continue
         }
         if (s.state === 'done') {
@@ -1085,11 +1125,15 @@ export default function App() {
             s.added != null
               ? `Scrape finished: +${s.added} new (${s.scraped ?? 0} checked${filt}${held})${
                   s.warnings?.length ? ` ⚠ ${s.warnings.join(' | ')}` : ''
-                }`
+                }${s.errors?.length ? ` ⛔ ${s.errors.length} error${s.errors.length === 1 ? '' : 's'} (see details)` : ''}`
               : 'Scrape finished.'
           )
+          setScrapeResult(s)
+          setShowScrapeModal(true)
         } else {
           setScrapeNote(s.error ? `Scrape failed: ${s.error}` : 'Scrape failed.')
+          setScrapeResult(s)
+          setShowScrapeModal(true)
         }
         break
       }
@@ -1097,6 +1141,7 @@ export default function App() {
       console.error('scrape trigger failed:', e)
       setScrapeNote('Could not start scrape — is the API running?')
     }
+    clearInterval(elapsedTimer)
     await fetchAll()
     setScraping(false)
   }, [scraping, fetchAll])
@@ -1307,9 +1352,15 @@ export default function App() {
               onClick={handleScrape}
               disabled={scraping}
               title="Scrape new jobs now (same as running main.py)"
-              className="rounded-lg bg-neutral-900 px-3 py-2 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
             >
-              {scraping ? 'Scraping…' : 'Scrape new jobs'}
+              {scraping && (
+                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
+                </svg>
+              )}
+              {scraping ? `Scraping… ${formatScrapeElapsed(scrapeElapsed)}` : 'Scrape new jobs'}
             </button>
             <button
               onClick={() => setDark((d) => !d)}
@@ -1337,11 +1388,162 @@ export default function App() {
           </div>
         </div>
         {scrapeNote && (
-          <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400" role="status">
-            {scrapeNote}
-          </p>
+          <div className="mt-2 flex flex-wrap items-center gap-2" role="status">
+            {scraping && (
+              <svg className="h-3.5 w-3.5 animate-spin text-neutral-400" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
+              </svg>
+            )}
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">
+              {scrapeNote}
+            </p>
+            {scrapeResult && !showScrapeModal && (
+              <button
+                onClick={() => setShowScrapeModal(true)}
+                className="rounded-md border border-neutral-300 px-2 py-0.5 text-xs font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                View details
+              </button>
+            )}
+          </div>
+        )}
+        {scraping && scrapeProgress && scrapeProgress.total > 0 && (
+          <div className="mt-2" aria-hidden="true">
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-all duration-500"
+                style={{
+                  width: `${Math.min(100, Math.round(((scrapeProgress.done ?? 0) / scrapeProgress.total) * 100))}%`,
+                }}
+              />
+            </div>
+            <p className="mt-1 text-[11px] text-neutral-400 dark:text-neutral-500">
+              {scrapeProgress.done ?? 0}/{scrapeProgress.total} steps
+              {scrapeProgress.source ? ` · ${scrapeProgress.source}` : ''}
+              {scrapeProgress.term ? ` · “${scrapeProgress.term}”` : ''}
+            </p>
+          </div>
         )}
       </header>
+      {showScrapeModal && scrapeResult && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setShowScrapeModal(false)}
+        >
+          <div
+            className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-5 shadow-xl dark:bg-neutral-900"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Scrape results"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold">
+                  {scrapeResult.state === 'done' ? 'Scrape finished' : 'Scrape failed'}
+                </h2>
+                <p className="mt-0.5 text-xs text-neutral-500 dark:text-neutral-400">
+                  {scrapeResult.summary || scrapeResult.error || ''}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowScrapeModal(false)}
+                className="rounded-lg border border-neutral-300 px-2.5 py-1 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                Close
+              </button>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
+              {[
+                ['New', scrapeResult.added ?? '—'],
+                ['Checked', scrapeResult.scraped ?? '—'],
+                ['Filtered', scrapeResult.filtered ?? 0],
+                ['Held', scrapeResult.filtered_saved ?? 0],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg bg-neutral-100 px-2 py-2 dark:bg-neutral-800">
+                  <p className="text-lg font-semibold">{value}</p>
+                  <p className="text-[11px] uppercase tracking-wide text-neutral-500 dark:text-neutral-400">{label}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 space-y-2 text-sm">
+              <details open className="rounded-lg border border-neutral-200 dark:border-neutral-800">
+                <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                  Per-source breakdown ({Object.keys(scrapeResult.source_stats || {}).length || 0})
+                </summary>
+                <div className="border-t border-neutral-200 px-3 py-2 dark:border-neutral-800">
+                  {scrapeResult.source_stats && Object.keys(scrapeResult.source_stats).length ? (
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-neutral-400">
+                          <th className="py-1 pr-2 font-medium">Source</th>
+                          <th className="py-1 pr-2 font-medium">Searches</th>
+                          <th className="py-1 pr-2 font-medium">Rows</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(scrapeResult.source_stats).map(([src, st]) => (
+                          <tr key={src} className="border-t border-neutral-100 dark:border-neutral-800">
+                            <td className="py-1 pr-2 font-medium">{src}</td>
+                            <td className="py-1 pr-2">{st.terms ?? '—'}</td>
+                            <td className="py-1 pr-2">{st.rows ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="py-1 text-xs text-neutral-400">No per-source stats.</p>
+                  )}
+                </div>
+              </details>
+              {!!scrapeResult.filter_reasons && Object.keys(scrapeResult.filter_reasons).length > 0 && (
+                <details className="rounded-lg border border-neutral-200 dark:border-neutral-800">
+                  <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-neutral-600 dark:text-neutral-300">
+                    Filter reasons ({Object.keys(scrapeResult.filter_reasons).length})
+                  </summary>
+                  <ul className="list-disc border-t border-neutral-200 px-6 py-2 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
+                    {Object.entries(scrapeResult.filter_reasons)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([k, v]) => (
+                        <li key={k}>{k} × {v}</li>
+                      ))}
+                  </ul>
+                </details>
+              )}
+              {!!scrapeResult.warnings?.length && (
+                <details open className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950">
+                  <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-amber-700 dark:text-amber-300">
+                    Warnings ({scrapeResult.warnings.length})
+                  </summary>
+                  <ul className="list-disc border-t border-amber-200 px-6 py-2 text-xs text-amber-700 dark:border-amber-800 dark:text-amber-300">
+                    {scrapeResult.warnings.map((w, i) => (
+                      <li key={i}>{w}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {!!scrapeResult.errors?.length && (
+                <details open className="rounded-lg border border-rose-200 bg-rose-50 dark:border-rose-800 dark:bg-rose-950">
+                  <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-rose-700 dark:text-rose-300">
+                    Errors ({scrapeResult.errors.length})
+                  </summary>
+                  <ul className="list-disc px-6 py-2 text-xs text-rose-700 dark:text-rose-300">
+                    {scrapeResult.errors.map((e, i) => (
+                      <li key={i} className="break-words">{e}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+              {!!scrapeResult.error && (
+                <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-300">
+                  {scrapeResult.error}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto max-w-7xl px-6 py-6">
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">

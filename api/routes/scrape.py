@@ -21,6 +21,11 @@ if str(ROOT) not in sys.path:
 
 from pipeline import run_scrape  # noqa: E402
 
+try:
+    import scraper as scraper_mod  # noqa: E402  (live progress snapshots)
+except Exception:  # pragma: no cover - scraper always importable in practice
+    scraper_mod = None
+
 router = APIRouter()
 
 _lock = threading.Lock()
@@ -37,6 +42,8 @@ _state: dict = {
     "filtered_saved": None,
     "source_stats": None,
     "warnings": None,
+    "errors": None,
+    "progress": None,
 }
 
 
@@ -48,6 +55,12 @@ def _worker(legacy_xlsx: bool):
     global _state
     try:
         result = run_scrape(legacy_xlsx=legacy_xlsx)
+        final_progress = None
+        if scraper_mod is not None:
+            try:
+                final_progress = scraper_mod.get_progress()
+            except Exception:
+                final_progress = None
         with _lock:
             _state.update({
                 "state": "done",
@@ -61,13 +74,22 @@ def _worker(legacy_xlsx: bool):
                 "filtered_saved": result.get("filtered_saved"),
                 "source_stats": result.get("source_stats"),
                 "warnings": result.get("warnings"),
+                "errors": result.get("errors"),
+                "progress": final_progress,
             })
     except Exception as e:  # never leave the button stuck on "running"
+        err_progress = None
+        if scraper_mod is not None:
+            try:
+                err_progress = scraper_mod.get_progress()
+            except Exception:
+                err_progress = None
         with _lock:
             _state.update({
                 "state": "error",
                 "finished_at": datetime.now(timezone.utc).isoformat(),
                 "error": str(e),
+                "progress": err_progress,
             })
 
 
@@ -90,6 +112,8 @@ def start_scrape(body: ScrapeRequest | None = None):
             "filtered_saved": None,
             "source_stats": None,
             "warnings": None,
+            "errors": None,
+            "progress": None,
         })
     t = threading.Thread(target=_worker, args=(legacy_xlsx,), daemon=True)
     t.start()
@@ -99,4 +123,12 @@ def start_scrape(body: ScrapeRequest | None = None):
 @router.get("/scrape/status")
 def scrape_status():
     with _lock:
-        return dict(_state)
+        snap = dict(_state)
+    # While a scrape is running, overlay the live progress snapshot so the
+    # dashboard can show stage / source / search-term without extra polling.
+    if snap.get("state") == "running" and scraper_mod is not None:
+        try:
+            snap["progress"] = scraper_mod.get_progress()
+        except Exception:
+            pass
+    return snap
