@@ -163,7 +163,7 @@ git commit -m "Distribution: add Docker Compose stack and .env.example"
 
 **Interfaces:**
 - Consumes: `GET /health` on `http://127.0.0.1:8000`; `docker-compose.yml` from Task 1.
-- Produces: running stack + default-browser tab; `--check-updates` output `update available: vX (current vY)` or `up to date`.
+- Produces: running stack + default-browser tab; `--check-updates` prints `latest release: {tag}` (or `[launcher] update check failed: ...`).
 
 - [ ] **Step 1: Write `launcher.py`** (stdlib only: `argparse`, `os`, `sys`, `time`, `urllib.request`, `webbrowser`, `subprocess`, `pathlib`)
 
