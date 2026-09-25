@@ -549,6 +549,14 @@ export default function App() {
   const [showUndoConfirm, setShowUndoConfirm] = useState(false)
   const [undoBusy, setUndoBusy] = useState(false)
 
+  // Shutdown (packaged dist only): power button -> confirm modal -> POST
+  // /shutdown -> stopped screen. Dev systemd units restart on exit, so the
+  // button is meant for the compose/exe stack (use stop.sh in dev).
+  const [showShutdownConfirm, setShowShutdownConfirm] = useState(false)
+  const [shuttingDown, setShuttingDown] = useState(false)
+  const [stopped, setStopped] = useState(false)
+  const [updateInfo, setUpdateInfo] = useState(null)
+
   const recordAction = useCallback((action) => {
     setLastAction(action)
     setUndoArmed(true)
@@ -614,6 +622,26 @@ export default function App() {
     const t = setInterval(fetchAll, 60000)
     return () => clearInterval(t)
   }, [fetchAll])
+
+  // Packaged-dist update banner: check once on mount; failures stay silent.
+  useEffect(() => {
+    fetch(`${API}/updates/check`)
+      .then((r) => r.json())
+      .then(setUpdateInfo)
+      .catch(() => {})
+  }, [])
+
+  const confirmShutdown = useCallback(async () => {
+    setShuttingDown(true)
+    try {
+      await fetch(`${API}/shutdown`, { method: 'POST' })
+    } catch (e) {
+      // Expected: the server exits on success, so the fetch rejects.
+    }
+    setShuttingDown(false)
+    setShowShutdownConfirm(false)
+    setStopped(true)
+  }, [])
 
   // Light refresh after single-row mutations: the optimistic update above
   // already fixed local state, so only /jobs needs re-syncing. Stats,
@@ -1510,6 +1538,19 @@ function describeScrapeProgress(p) {
       : 0
   }, [stats, barData])
 
+  if (stopped) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-neutral-50 px-6 dark:bg-neutral-950">
+        <div className="w-full max-w-md rounded-xl border border-neutral-200 bg-white p-6 text-center shadow-xl dark:border-neutral-700 dark:bg-neutral-900">
+          <h1 className="text-lg font-semibold">JobScraper stopped</h1>
+          <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400">
+            JobScraper stopped &mdash; you can close this tab.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-800 dark:bg-neutral-950 dark:text-neutral-200">
       <header className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-6 py-4 dark:border-neutral-800 dark:bg-neutral-900">
@@ -1581,6 +1622,16 @@ function describeScrapeProgress(p) {
                   <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
                 </svg>
               )}
+            </button>
+            <button
+              onClick={() => setShowShutdownConfirm(true)}
+              className="rounded-lg border border-neutral-300 bg-neutral-100 p-2 hover:bg-neutral-200 dark:border-neutral-700 dark:bg-neutral-800 dark:hover:bg-neutral-700"
+              title="Stop JobScraper (dashboard + scraper)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 2v10"/>
+                <path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>
+              </svg>
             </button>
           </div>
         </div>
@@ -2936,6 +2987,45 @@ function describeScrapeProgress(p) {
             </div>
           </div>
         </div>
+      )}
+
+      {showShutdownConfirm && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-neutral-900/50 p-4"
+          onClick={() => !shuttingDown && setShowShutdownConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold">Stop JobScraper?</h2>
+            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+              The dashboard and scraper will stop. Restart with the desktop shortcut.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setShowShutdownConfirm(false)}
+                disabled={shuttingDown}
+                className="rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmShutdown}
+                disabled={shuttingDown}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-rose-500 dark:hover:bg-rose-600"
+              >
+                {shuttingDown ? 'Stopping…' : 'Stop JobScraper'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {updateInfo?.update_available && (
+        <footer className="sticky bottom-0 z-10 border-t border-amber-200 bg-amber-50 px-6 py-2.5 text-center text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          Update available: {updateInfo.latest} &mdash; run setup.sh --upgrade (Linux) or re-run the installer (Windows).
+        </footer>
       )}
     </div>
   )
