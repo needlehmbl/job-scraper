@@ -9,8 +9,10 @@ Keep the current dev setup working (`venv`, systemd units, `run_and_open.sh`,
 can install:
 
 - Linux: `tar.gz` + Docker Compose, one `setup.sh` wizard, one launcher.
-- Windows: `JobScraper-Setup-v*.exe` (Inno Setup wizard) + portable
-  `jobscraper-win64.zip`, no terminal / Python / Node knowledge required.
+- Windows (pick ONE, exe recommended): `JobScraper-Setup-v*.exe` installer
+  wizard (beginner path) OR portable `jobscraper-win64.zip` (no install, no
+  admin). Both contain the same app; the exe adds shortcuts + uninstaller.
+  No terminal / Python / Node knowledge required either way.
 - First-run wizard order: OpenRouter API key (with signup link) ->
   search terms + location -> job-board toggles -> install dir.
 - Desktop / Start Menu shortcut behaves like `run_and_open.sh` (start stack +
@@ -135,6 +137,24 @@ exits nonzero with human-readable errors (mirrors `--check` convention).
 - `.env.example` added (keys empty); real `.env` stays gitignored (it
   currently holds live keys — never package it).
 
+## 6b. Updates (edge case: app already installed)
+
+- Windows exe: Inno `AppId` fixed + `UsePreviousAppDir=yes`; rerunning a newer
+  Setup detects the existing dir, shows "Update JobScraper (keeps your jobs,
+  key, and settings)", replaces binaries + `dashboard/dist` only, preserves
+  `.env`/`config.yaml`/Postgres data, reruns `schema.sql` migrations via
+  `ensure_tracking_schema()`, shows changelog on finish.
+- Windows portable zip: dashboard footer + launcher `--check-updates` compare
+  against the GitHub Releases API; on new `v*` tag the wizard offers
+  one-click download, replaces the app folder, migrates `.env`/`config.yaml`
+  in place, never touches Postgres data.
+- Linux: `setup.sh --upgrade <new-tarball>` (also via dashboard update
+  banner): backs up `.env`/`config.yaml`, extracts over the install dir,
+  `docker compose pull && docker compose up -d`, named volume `pgdata`
+  preserves all jobs; reruns migrations; `run.sh` refuses to start on a
+  version mismatch and points at `setup.sh --upgrade` instead. Beginner copy:
+  "Update keeps everything — your jobs, key, and search terms stay."
+
 ## 7. Testing
 
 - `setup.sh --check` + wizard validation unit checks (key format, ≥1 term,
@@ -143,6 +163,8 @@ exits nonzero with human-readable errors (mirrors `--check` convention).
   default browser -> Scrape 1 term -> Apply opens default-browser tab ->
   power button stops stack -> reinstall keeps data.
 - Release CI builds both artifacts; checksum verify; `compose config` lint.
+- Update smoke: install vN with data -> install vN+1 (exe update + Linux
+  `--upgrade`) -> jobs/key/settings preserved, `POST /shutdown` still works.
 
 ## 8. Rollout
 
