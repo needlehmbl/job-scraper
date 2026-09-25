@@ -15,6 +15,13 @@ cd "$(dirname "$0")"
 
 stopped=0
 
+# 0. Compose stack (no-op when Docker or the stack is absent)
+if docker compose ps >/dev/null 2>&1; then
+    echo "[stop] stopping compose stack"
+    docker compose down 2>/dev/null || true
+    stopped=1
+fi
+
 # 1. systemd user units for the API + dashboard (disables auto-restart while
 #    stopped; re-enable with run_and_open.sh, systemctl --user start, or login)
 for unit in job-dashboard-api job-dashboard-web; do

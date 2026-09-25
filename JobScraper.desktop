@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=JobScraper
+Comment=Review junior developer job leads
+Exec=/bin/bash -c 'cd %k/.. 2>/dev/null; ./run.sh'
+Icon=jobscraper
+Terminal=false
+Categories=Utility;
