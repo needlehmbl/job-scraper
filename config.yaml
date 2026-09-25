@@ -228,10 +228,8 @@ company_boards:
 glassdoor_locations:
   - {slug: "Makati City", id: 4778930}   # verified live 2026-09-21
 
-# Local output file -- one row per NEW job, appended across runs.
-# Existing rows are preserved; re-scraped jobs are skipped as duplicates.
+# Local output files.
 paths:
-  tracker_sheet: "applications.xlsx"
   # One-line summary of every finished run (written by main.py). The
   # notification daemon tails this and pops a desktop notification.
   runs_log: "runs.log"

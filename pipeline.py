@@ -1,5 +1,5 @@
 """
-Shared scrape pipeline: scrape -> filter -> dedupe (within run + vs tracker)
+Shared scrape pipeline: scrape -> filter -> dedupe (within run + vs Postgres)
 -> Postgres.
 
 Used by both the CLI (`main.py`) and the dashboard API
@@ -13,7 +13,6 @@ from scraper import load_config, scrape
 
 import db
 import scraper as scraper_mod
-import tracker
 
 
 def _is_missing(value) -> bool:
@@ -94,20 +93,7 @@ def _jrow(job, bank_low=None, _score_fn=None) -> dict:
     return row
 
 
-def _xrow(job) -> dict:
-    return {
-        "status": "NEW",
-        "title": _clean(job.get("title", "")),
-        "company": _clean(job.get("company", "")),
-        "location": _clean(job.get("location", "")),
-        "date_posted": job.get("date_posted", ""),
-        "job_url": _clean(job.get("job_url", "")),
-        "search_term": _clean(job.get("matched_search_term", "")),
-        "notes": "",
-    }
-
-
-def run_scrape(legacy_xlsx: bool = False) -> dict:
+def run_scrape() -> dict:
     """Run one full scrape and return a summary dict.
 
     Returns {"added", "scraped", "summary", "filtered", "filter_reasons",
@@ -185,9 +171,6 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
                 "source_stats": src_report, "warnings": warnings,
                 "errors": errors}
 
-    sheet_path = cfg["paths"]["tracker_sheet"]
-    df = tracker.load_or_init(sheet_path) if legacy_xlsx else None
-
     try:
         import score as score_mod
         bank_low = score_mod.load_bank_text()
@@ -241,13 +224,8 @@ def run_scrape(legacy_xlsx: bool = False) -> dict:
                         known_fps[fp] = {"id": _hit["id"], "url": _hit.get("url", "")}
                 except Exception:
                     pass
-            if legacy_xlsx:
-                df = tracker.upsert(df, _xrow(job))
     if dup_fp:
         print(f"[pipeline] fingerprint dedup: {dup_fp} reposts already tracked (last_seen refreshed).")
-
-    if legacy_xlsx:
-        tracker.save(df, sheet_path)
 
     finished = datetime.now(timezone.utc)
     summary = (

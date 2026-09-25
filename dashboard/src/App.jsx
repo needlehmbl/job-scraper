@@ -505,6 +505,7 @@ export default function App() {
   const [scrapeElapsed, setScrapeElapsed] = useState(0)
   const [scrapeResult, setScrapeResult] = useState(null)
   const [showScrapeModal, setShowScrapeModal] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [tab, setTab] = useState('jobs')
   const [jobsPage, setJobsPage] = useState(1)
   const [appsPage, setAppsPage] = useState(1)
@@ -1079,6 +1080,29 @@ function describeScrapeProgress(p) {
   return s
 }
 
+  const handleExport = useCallback(async () => {
+    if (exporting) return
+    setExporting(true)
+    try {
+      const r = await fetch(`${API}/export/xlsx`)
+      if (!r.ok) throw new Error(`export failed (${r.status})`)
+      const blob = await r.blob()
+      const cd = r.headers.get('content-disposition') || ''
+      const name = cd.match(/filename="([^"]+)"/)?.[1] || 'jobs.xlsx'
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      console.error('xlsx export failed:', e)
+    }
+    setExporting(false)
+  }, [exporting])
+
   const handleScrape = useCallback(async () => {
     if (scraping) return
     setScraping(true)
@@ -1370,6 +1394,14 @@ function describeScrapeProgress(p) {
                 <ClipLoader size={14} color="currentColor" speedMultiplier={1} aria-hidden="true" />
               )}
               {scraping ? `Scraping… ${formatScrapeElapsed(scrapeElapsed)}` : 'Scrape new jobs'}
+            </button>
+            <button
+              onClick={handleExport}
+              disabled={exporting}
+              title="Download Jobs + Filtered tabs as a styled spreadsheet"
+              className="rounded-lg border border-neutral-300 bg-white px-3 py-2 text-xs font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700"
+            >
+              {exporting ? 'Preparing…' : 'Download xlsx'}
             </button>
             <button
               onClick={() => setDark((d) => !d)}

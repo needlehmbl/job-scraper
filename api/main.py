@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from api.routes import apply, filtered, jobs, scrape, stats, tailor  # noqa: E402
+from api.routes import apply, export, filtered, jobs, scrape, stats, tailor  # noqa: E402
 
 app = FastAPI(title="Job Scraper API", version="1.0.0")
 
@@ -45,6 +45,7 @@ app.include_router(apply.router, prefix="/jobs", tags=["apply"])
 app.include_router(filtered.router, prefix="/filtered", tags=["filtered"])
 app.include_router(stats.router, tags=["jobs"])
 app.include_router(scrape.router, tags=["scrape"])
+app.include_router(export.router, tags=["export"])
 app.include_router(tailor.router, tags=["tailor"])
 
 

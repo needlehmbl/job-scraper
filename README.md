@@ -22,8 +22,8 @@ to postings from a browser tab.
 - A **Resumes** library (drag-drop `.docx`) plus a per-row **Tailor** button:
   previews a posting-tailored resume (skill add/drop suggestions included)
   as downloadable `.docx` — you still apply manually.
-- `applications.xlsx` support is kept behind `--legacy-xlsx` until you've
-  confirmed the Postgres path on a few real runs.
+- A **Download xlsx** button exports the Jobs + Filtered tabs as a styled
+  offline spreadsheet (`GET /export/xlsx`).
 
 ## 1. Architecture
 
@@ -94,7 +94,7 @@ the in-flight run instead.
 Or run the pieces by hand if you'd rather not use systemd:
 
 ```bash
-venv/bin/python main.py                # scrape into Postgres (add --legacy-xlsx to mirror to xlsx)
+venv/bin/python main.py                # scrape into Postgres
 systemctl --user start job-dashboard-api job-dashboard-web   # or uvicorn / npm run dev directly
 ```
 
@@ -102,9 +102,8 @@ systemctl --user start job-dashboard-api job-dashboard-web   # or uvicorn / npm 
 systemd units if they're stopped, falling back to plain `nohup` processes if
 systemd is unavailable), then opens `http://localhost:5173` in your default
 browser. To scrape from a terminal instead of the dashboard button, run
-`venv/bin/python main.py` directly (add `--legacy-xlsx` to also mirror new
-rows to `applications.xlsx`, or pass `{"legacy_xlsx": true}` to `POST
-/scrape`); running it repeatedly is safe because duplicates are skipped.
+`venv/bin/python main.py` directly; running it repeatedly is safe because
+duplicates are skipped.
 
 To shut everything down (including any stray `apply_helper.py` / Playwright
 browser left over from manual CLI use):
@@ -268,8 +267,8 @@ file upload is attempted.
   (shows which funnel stage a rejection came after).
 - `GET /runs/latest` — most recent `scrape_runs` row.
 - `POST /scrape` — start a scrape in the background (same code as
-  `venv/bin/python main.py`); `409` if one is already running. Optional body
-  `{"legacy_xlsx": true}` mirrors to `applications.xlsx`.
+  `venv/bin/python main.py`); `409` if one is already running.
+- `GET /export/xlsx` — download Jobs + Filtered tabs as a styled workbook.
 - `GET /scrape/status` — `idle | running | done | error` plus `added` /
   `scraped` counts, the run `summary`, `filtered_saved` (rows held in the
   Filtered tab), the feedback breakdown
@@ -488,9 +487,9 @@ Kalibrr, Bossjob).
 - `apply_helper.py` fills forms, it never clicks final submit — some ATS
   platforms (Workday especially) actively detect and block automation, so
   keep this manual step.
-- `applications.xlsx` is still written when you pass `--legacy-xlsx`; the
-  Postgres `jobs` table is the new source of truth and the dashboard reads
-  only Postgres.
+- The Postgres `jobs` table is the source of truth and the dashboard reads
+  only Postgres; the dashboard's **Download xlsx** button covers the
+  offline-spreadsheet need.
 - On-demand per-posting tailoring lives in `tailor.py` + `resumes.py` +
   `render_resume.py` (see [Resume tailoring](#resume-tailoring)). The old
   batch pipeline under `.archive-tailoring/` stays archived — nothing

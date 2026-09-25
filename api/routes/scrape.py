@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -47,14 +46,10 @@ _state: dict = {
 }
 
 
-class ScrapeRequest(BaseModel):
-    legacy_xlsx: bool = False
-
-
-def _worker(legacy_xlsx: bool):
+def _worker():
     global _state
     try:
-        result = run_scrape(legacy_xlsx=legacy_xlsx)
+        result = run_scrape()
         final_progress = None
         if scraper_mod is not None:
             try:
@@ -94,8 +89,7 @@ def _worker(legacy_xlsx: bool):
 
 
 @router.post("/scrape", status_code=202)
-def start_scrape(body: ScrapeRequest | None = None):
-    legacy_xlsx = bool(body.legacy_xlsx) if body else False
+def start_scrape():
     with _lock:
         if _state["state"] == "running":
             raise HTTPException(status_code=409, detail="scrape already running")
@@ -115,7 +109,7 @@ def start_scrape(body: ScrapeRequest | None = None):
             "errors": None,
             "progress": None,
         })
-    t = threading.Thread(target=_worker, args=(legacy_xlsx,), daemon=True)
+    t = threading.Thread(target=_worker, daemon=True)
     t.start()
     return {"ok": True, "state": "running", "started_at": _state["started_at"]}
 
