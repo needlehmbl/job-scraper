@@ -25,6 +25,14 @@ to postings from a browser tab.
 - A **Download xlsx** button exports the Jobs + Filtered tabs as a styled
   offline spreadsheet (`GET /export/xlsx`).
 
+## Demo
+
+`demo/job-scraper-demo.mp4` (~4 min, silent) walks the dashboard end to
+end: triage, duplicate scan, Filtered review, resume tailoring, xlsx
+export, and a real scrape with a time-lapse through the long middle.
+Retake with `venv/bin/python demo/record-demo.py` (full take) and rebuild
+the cut with `demo/assemble.sh` — see the script headers.
+
 ## 1. Architecture
 
 ```

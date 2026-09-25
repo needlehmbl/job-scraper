@@ -26,5 +26,7 @@ dashboard.log
 dashboard/dist/
 dashboard/node_modules/
 dashboard/.vite/
+# Demo recording intermediates (raw takes); the final cut is committed.
+demo/takes/
 # Playwright login cookies -- never commit
 storage_state/
