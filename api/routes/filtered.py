@@ -2,12 +2,14 @@
 
 GET /filtered                  -- held-out postings, newest first
 POST /filtered/{fid}/restore   -- move one back into `jobs` as NEW
+POST /filtered/{fid}/unrestore -- undo a restore (dashboard Undo button)
+POST /filtered/reinsert        -- re-create a dismissed posting (undo of delete)
 DELETE /filtered/{fid}         -- dismiss one permanently (it was filtered right)
 """
 from fastapi import APIRouter, HTTPException
 
 from api import db
-from api.models import FilteredJob
+from api.models import FilteredJob, FilteredReinsert
 
 router = APIRouter()
 
@@ -43,6 +45,30 @@ def restore_filtered(fid: int):
         if r["id"] == fid:
             return r
     raise HTTPException(status_code=500, detail="restore succeeded but row vanished")
+
+
+@router.post("/{fid}/unrestore", response_model=FilteredJob)
+def unrestore_filtered(fid: int):
+    _ensure()
+    try:
+        row = db.unrestore_filtered_job(fid)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"unrestore failed: {e}")
+    if row is None:
+        raise HTTPException(status_code=404, detail="filtered posting not found")
+    return row
+
+
+@router.post("/reinsert", response_model=FilteredJob)
+def reinsert_filtered(body: FilteredReinsert):
+    _ensure()
+    try:
+        row = db.reinsert_filtered_job(body.model_dump())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"reinsert failed: {e}")
+    if row is None:
+        raise HTTPException(status_code=400, detail="nothing to reinsert")
+    return row
 
 
 @router.delete("/{fid}")

@@ -92,5 +92,19 @@ class FilteredJob(BaseModel):
     restored: bool = False
 
 
+class FilteredReinsert(BaseModel):
+    """Snapshot of a dismissed filtered posting, for undo of delete."""
+
+    source: str = ""
+    title: str = ""
+    company: str = ""
+    url: str = ""
+    location: str | None = None
+    date_posted: date | None = None
+    description: str | None = None
+    search_term: str | None = None
+    filter_reason: str = ""
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)

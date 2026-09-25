@@ -467,3 +467,103 @@ def delete_filtered_job(fid: int, conn=None) -> bool:
     finally:
         if own:
             conn.close()
+
+
+def unrestore_filtered_job(fid: int, conn=None) -> dict | None:
+    """Undo a restore: flip `restored` back to FALSE and drop the auto-created
+    triage row (same URL) if it is still untouched (status NEW)."""
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM filtered_jobs WHERE id = %s", (fid,))
+            f = cur.fetchone()
+            if not f:
+                return None
+            f = dict(f)
+            url = ((f.get("url") or "").strip().lower().rstrip("/"))
+            if url:
+                cur.execute(
+                    "DELETE FROM jobs WHERE url = %s AND status = 'NEW'",
+                    (url,),
+                )
+            cur.execute(
+                "UPDATE filtered_jobs SET restored = FALSE WHERE id = %s "
+                "RETURNING *",
+                (fid,),
+            )
+            row = cur.fetchone()
+            conn.commit()
+            return dict(row) if row else None
+    finally:
+        if own:
+            conn.close()
+
+
+def reinsert_filtered_job(row: dict, conn=None) -> dict | None:
+    """Re-create a dismissed filtered posting (undo of delete). Returns the
+    new row, or None when the payload has no usable URL/title."""
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            url = ((row.get("url") or "").strip().lower().rstrip("/"))
+            title = (row.get("title") or "").strip()
+            if not url and not title:
+                return None
+            if url:
+                cur.execute(
+                    """
+                    INSERT INTO filtered_jobs
+                      (source, title, company, url, location, date_posted,
+                       description, search_term, filter_reason, restored)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                    ON CONFLICT (url) WHERE url <> '' DO UPDATE SET
+                      source = EXCLUDED.source,
+                      title = EXCLUDED.title,
+                      company = EXCLUDED.company,
+                      location = EXCLUDED.location,
+                      date_posted = EXCLUDED.date_posted,
+                      description = EXCLUDED.description,
+                      search_term = EXCLUDED.search_term,
+                      filter_reason = EXCLUDED.filter_reason,
+                      restored = FALSE
+                    RETURNING *
+                    """,
+                    (row.get("source") or "",
+                     title,
+                     row.get("company") or "",
+                     url,
+                     row.get("location"),
+                     row.get("date_posted"),
+                     row.get("description"),
+                     row.get("search_term"),
+                     row.get("filter_reason") or ""),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO filtered_jobs
+                      (source, title, company, url, location, date_posted,
+                       description, search_term, filter_reason, restored)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                    RETURNING *
+                    """,
+                    (row.get("source") or "",
+                     title,
+                     row.get("company") or "",
+                     "",
+                     row.get("location"),
+                     row.get("date_posted"),
+                     row.get("description"),
+                     row.get("search_term"),
+                     row.get("filter_reason") or ""),
+                )
+            new_row = cur.fetchone()
+            conn.commit()
+            return dict(new_row) if new_row else None
+    finally:
+        if own:
+            conn.close()

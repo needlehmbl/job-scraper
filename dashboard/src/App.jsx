@@ -540,6 +540,20 @@ export default function App() {
   const [tailorLoading, setTailorLoading] = useState(false)
   const [tailorError, setTailorError] = useState('')
 
+  // Undo: most-recent mutating action only, no cooldown. `lastAction` is a
+  // descriptor { kind, label, ...payload }; `undoArmed` flips true on the
+  // first undoable interaction and never flips back, so the circular button
+  // stays mounted forever (disabled when there is nothing to undo).
+  const [lastAction, setLastAction] = useState(null)
+  const [undoArmed, setUndoArmed] = useState(false)
+  const [showUndoConfirm, setShowUndoConfirm] = useState(false)
+  const [undoBusy, setUndoBusy] = useState(false)
+
+  const recordAction = useCallback((action) => {
+    setLastAction(action)
+    setUndoArmed(true)
+  }, [])
+
   const toggleHidden = useCallback((s) => {
     setHidden((prev) => (prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]))
   }, [])
@@ -618,6 +632,11 @@ export default function App() {
 
   const bulkApplyStatus = useCallback(async () => {
     if (!bulkStatus || selected.length === 0 || bulkBusy) return
+    const prevs = selected.map((id) => ({
+      id,
+      prev: jobs.find((j) => j.id === id)?.status,
+    })).filter((p) => p.prev && p.prev !== bulkStatus)
+    const target = bulkStatus
     setBulkBusy(true)
     try {
       await Promise.all(
@@ -625,10 +644,17 @@ export default function App() {
           fetch(`${API}/jobs/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status: bulkStatus }),
+            body: JSON.stringify({ status: target }),
           })
         )
       )
+      if (prevs.length > 0) {
+        recordAction({
+          kind: 'status',
+          ids: prevs,
+          label: `Bulk set ${prevs.length} row${prevs.length === 1 ? '' : 's'} → ${target}`,
+        })
+      }
       setSelected([])
       setBulkStatus('')
       await fetchAll()
@@ -637,7 +663,7 @@ export default function App() {
       await fetchAll()
     }
     setBulkBusy(false)
-  }, [bulkStatus, selected, bulkBusy, fetchAll])
+  }, [bulkStatus, selected, bulkBusy, fetchAll, jobs, recordAction])
 
   const parsedSearch = useMemo(() => parseSearchQuery(search), [search])
 
@@ -857,8 +883,72 @@ export default function App() {
     []
   )
 
+  const performUndo = useCallback(async () => {
+    if (!lastAction || undoBusy) return
+    setUndoBusy(true)
+    try {
+      const a = lastAction
+      if (a.kind === 'status') {
+        a.ids.forEach(({ id, prev }) =>
+          updateJobs(id, { status: prev })
+        )
+        await Promise.all(
+          a.ids.map(({ id, prev }) =>
+            fetch(`${API}/jobs/${id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status: prev }),
+            })
+          )
+        )
+      } else if (a.kind === 'stage') {
+        updateJobs(a.id, { stage: a.prevStage, status: a.prevStatus })
+        if (a.prevStatus === 'APPLIED') {
+          await fetch(`${API}/jobs/${a.id}/stage`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stage: a.prevStage }),
+          })
+        } else {
+          await fetch(`${API}/jobs/${a.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: a.prevStatus }),
+          })
+        }
+      } else if (a.kind === 'followup') {
+        updateJobs(a.id, { follow_up_at: a.prev })
+        await fetch(`${API}/jobs/${a.id}/followup`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ follow_up_at: a.prev }),
+        })
+      } else if (a.kind === 'restore') {
+        const r = await fetch(`${API}/filtered/${a.fid}/unrestore`, {
+          method: 'POST',
+        })
+        if (!r.ok) throw new Error(`unrestore failed (${r.status})`)
+      } else if (a.kind === 'dismiss') {
+        const r = await fetch(`${API}/filtered/reinsert`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(a.snapshot),
+        })
+        if (!r.ok) throw new Error(`reinsert failed (${r.status})`)
+      }
+      setLastAction(null)
+      setShowUndoConfirm(false)
+      await fetchAll()
+    } catch (e) {
+      console.error('undo failed:', e)
+      await fetchAll()
+    }
+    setUndoBusy(false)
+  }, [lastAction, undoBusy, updateJobs, fetchAll])
+
   const changeStatus = useCallback(
     async (job, nextStatus) => {
+      const prev = job.status
       updateJobs(job.id, { status: nextStatus })
       if (confirmApplyId === job.id) setConfirmApplyId(null)
       try {
@@ -867,35 +957,54 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ status: nextStatus }),
         })
+        if (prev !== nextStatus) {
+          recordAction({
+            kind: 'status',
+            ids: [{ id: job.id, prev }],
+            label: `Set "${job.title || 'Untitled'}" (#${job.id}) ${prev} → ${nextStatus}`,
+          })
+        }
         refreshJobs()
       } catch (e) {
         console.error('status update failed:', e)
         fetchAll()
       }
     },
-    [updateJobs, fetchAll, refreshJobs, confirmApplyId]
+    [updateJobs, fetchAll, refreshJobs, confirmApplyId, recordAction]
   )
 
   const setFollowup = useCallback(
     async (job, nextDate) => {
-      updateJobs(job.id, { follow_up_at: nextDate || null })
+      const prev = job.follow_up_at || null
+      const next = nextDate || null
+      updateJobs(job.id, { follow_up_at: next })
       try {
         await fetch(`${API}/jobs/${job.id}/followup`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ follow_up_at: nextDate || null }),
+          body: JSON.stringify({ follow_up_at: next }),
         })
+        if (prev !== next) {
+          recordAction({
+            kind: 'followup',
+            id: job.id,
+            prev,
+            label: `Set follow-up of "${job.title || 'Untitled'}" (#${job.id}) ${prev || 'none'} → ${next || 'none'}`,
+          })
+        }
         refreshJobs()
       } catch (e) {
         console.error('follow-up update failed:', e)
         fetchAll()
       }
     },
-    [updateJobs, fetchAll, refreshJobs]
+    [updateJobs, fetchAll, refreshJobs, recordAction]
   )
 
   const setStage = useCallback(
     async (job, nextStage) => {
+      const prevStage = job.stage || null
+      const prevStatus = job.status
       updateJobs(job.id, { stage: nextStage, status: 'APPLIED' })
       try {
         await fetch(`${API}/jobs/${job.id}/stage`, {
@@ -903,13 +1012,22 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ stage: nextStage }),
         })
+        if (prevStage !== nextStage || prevStatus !== 'APPLIED') {
+          recordAction({
+            kind: 'stage',
+            id: job.id,
+            prevStage,
+            prevStatus,
+            label: `Set stage of "${job.title || 'Untitled'}" (#${job.id}) ${prevStage || 'none'}/${prevStatus} → ${nextStage}/APPLIED`,
+          })
+        }
         refreshJobs()
       } catch (e) {
         console.error('stage update failed:', e)
         fetchAll()
       }
     },
-    [updateJobs, fetchAll, refreshJobs]
+    [updateJobs, fetchAll, refreshJobs, recordAction]
   )
 
   const moveBackToJobs = useCallback(
@@ -956,6 +1074,11 @@ export default function App() {
           method: 'POST',
         })
         if (!r.ok) throw new Error(`restore failed (${r.status})`)
+        recordAction({
+          kind: 'restore',
+          fid: job.id,
+          label: `Restored "${job.title || 'Untitled'}" to Jobs as NEW`,
+        })
         setFilteredNote(
           `Restored "${job.title || 'Untitled'}" to Jobs as NEW — mark it REVIEWED/APPLIED there so the learner adjusts.`
         )
@@ -967,21 +1090,37 @@ export default function App() {
       await fetchAll()
       setRestoring(null)
     },
-    [fetchAll]
+    [fetchAll, recordAction]
   )
 
   const deleteFiltered = useCallback(
     async (job) => {
       if (!window.confirm(`Dismiss "${job.title || 'Untitled'}" from review? (A future scrape can hold it again.)`))
         return
+      const snapshot = {
+        source: job.source || '',
+        title: job.title || '',
+        company: job.company || '',
+        url: job.url || '',
+        location: job.location || null,
+        date_posted: job.date_posted || null,
+        description: job.description || null,
+        search_term: job.search_term || null,
+        filter_reason: job.filter_reason || '',
+      }
       try {
         await fetch(`${API}/filtered/${job.id}`, { method: 'DELETE' })
+        recordAction({
+          kind: 'dismiss',
+          snapshot,
+          label: `Dismissed "${job.title || 'Untitled'}" from Filtered review`,
+        })
       } catch (e) {
         console.error('filtered delete failed:', e)
       }
       await fetchAll()
     },
-    [fetchAll]
+    [fetchAll, recordAction]
   )
 
   const markGroupDupe = useCallback(
@@ -993,6 +1132,10 @@ export default function App() {
       )
       const rest = group.rows.filter((r) => !kept.has(r.id))
       if (!rest.length) return
+      const prevs = rest.map((r) => ({
+        id: r.id,
+        prev: jobs.find((j) => j.id === r.id)?.status || r.status,
+      }))
       setDupeBusy(group.key)
       try {
         await Promise.all(
@@ -1004,6 +1147,11 @@ export default function App() {
             })
           )
         )
+        recordAction({
+          kind: 'status',
+          ids: prevs,
+          label: `Marked ${rest.length} duplicate${rest.length === 1 ? '' : 's'} as DUPLICATE (“${group.rows[0].title}” @ ${group.rows[0].company})`,
+        })
         setKeepers((prev) => {
           const next = { ...prev }
           delete next[group.key]
@@ -1015,7 +1163,7 @@ export default function App() {
       await fetchAll()
       setDupeBusy(null)
     },
-    [keepers, dupeDefaults, fetchAll]
+    [keepers, dupeDefaults, fetchAll, jobs, recordAction]
   )
 
   const keptIdsFor = useCallback(
@@ -1031,6 +1179,7 @@ export default function App() {
   const markSelectedDupeGroups = useCallback(async () => {
     const targets = dupeGroups.filter((g) => selectedDupeGroups.has(g.key))
     if (!targets.length || dupeBusy) return
+    const prevById = new Map(jobs.map((j) => [j.id, j.status]))
     setDupeBusy('__bulk__')
     try {
       const ids = []
@@ -1047,6 +1196,13 @@ export default function App() {
           })
         )
       )
+      if (ids.length > 0) {
+        recordAction({
+          kind: 'status',
+          ids: ids.map((id) => ({ id, prev: prevById.get(id) || 'NEW' })),
+          label: `Marked ${ids.length} duplicate${ids.length === 1 ? '' : 's'} as DUPLICATE across ${targets.length} group${targets.length === 1 ? '' : 's'}`,
+        })
+      }
       setKeepers((prev) => {
         const next = { ...prev }
         for (const g of targets) delete next[g.key]
@@ -1058,7 +1214,7 @@ export default function App() {
     }
     await fetchAll()
     setDupeBusy(null)
-  }, [dupeGroups, selectedDupeGroups, dupeBusy, keptIdsFor, fetchAll])
+  }, [dupeGroups, selectedDupeGroups, dupeBusy, keptIdsFor, fetchAll, jobs, recordAction])
 
 function formatScrapeElapsed(sec) {
   const s = Math.max(0, Math.floor(sec || 0))
@@ -2732,6 +2888,52 @@ function describeScrapeProgress(p) {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+      {undoArmed && (
+        <button
+          onClick={() => lastAction && setShowUndoConfirm(true)}
+          disabled={!lastAction}
+          title={lastAction ? `Undo: ${lastAction.label}` : 'Nothing to undo'}
+          className="fixed bottom-6 right-6 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-neutral-900 text-2xl text-white shadow-xl transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+        >
+          ↺
+        </button>
+      )}
+
+      {showUndoConfirm && lastAction && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-neutral-900/50 p-4"
+          onClick={() => !undoBusy && setShowUndoConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-semibold">Undo last action?</h2>
+            <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-400">
+              {lastAction.label}
+            </p>
+            <p className="mt-1 text-xs text-neutral-400 dark:text-neutral-500">
+              This reverses the most recent change only. There is no cooldown — undo again after your next action.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => setShowUndoConfirm(false)}
+                disabled={undoBusy}
+                className="rounded-lg border border-neutral-300 px-4 py-2 text-sm font-medium text-neutral-600 hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={performUndo}
+                disabled={undoBusy}
+                className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              >
+                {undoBusy ? 'Undoing…' : 'Confirm undo ↺'}
+              </button>
+            </div>
           </div>
         </div>
       )}

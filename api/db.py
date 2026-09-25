@@ -14,4 +14,6 @@ from db import (  # noqa: F401,E402
     list_filtered_jobs,
     restore_filtered_job,
     delete_filtered_job,
+    unrestore_filtered_job,
+    reinsert_filtered_job,
 )
