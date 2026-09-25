@@ -28,7 +28,7 @@ except ImportError:
 
 try:
     import tkinter as tk
-    from tkinter import messagebox
+    from tkinter import messagebox, simpledialog
 except ImportError:
     tk = None
 
@@ -188,6 +188,19 @@ def do_check():
     return 0 if ok else 1
 
 
+def _safe_members(tf):
+    """Yield tarball members, rejecting absolute paths, '..' escapes, and links.
+
+    Fallback for system Pythons older than 3.12 that lack TarFile.extractall(filter=).
+    """
+    for member in tf.getmembers():
+        if os.path.isabs(member.name) or ".." in Path(member.name).parts:
+            raise ValueError(f"Unsafe file in update: {member.name}")
+        if member.issym() or member.islnk():
+            raise ValueError(f"Unsafe link in update: {member.name}")
+        yield member
+
+
 def do_upgrade(tarball, dest_dir=None):
     """Extract tarball over dest_dir, preserving .env + config.yaml."""
     dest = Path(dest_dir) if dest_dir else ROOT
@@ -205,7 +218,11 @@ def do_upgrade(tarball, dest_dir=None):
                 backup[name] = dst.read_bytes()
     try:
         with tarfile.open(tarball, "r:*") as tf:
-            tf.extractall(dest)
+            try:
+                tf.extractall(dest, filter="data")
+            except TypeError:  # system Python older than 3.12: no filter= support
+                for member in _safe_members(tf):
+                    tf.extract(member, dest)
     except Exception as e:
         print(f"Could not unpack the update ({e})")
         return 1
@@ -215,14 +232,23 @@ def do_upgrade(tarball, dest_dir=None):
     return 0
 
 
-def ensure_deps_cli(install_dir):
-    """Dependencies step: Docker -> winget -> native instructions. Returns True on OK."""
-    print("\n--- Dependencies: getting the database and browser ready ---")
+def ensure_deps_cli(install_dir, say=None, confirm_retry=None, ask_text=None):
+    """Dependencies step: Docker -> winget -> native instructions. Returns True on OK.
+
+    say/confirm_retry/ask_text are UI hooks so the Tkinter wizard reuses this
+    same routine: CLI defaults are print/input; the GUI passes a status-label
+    updater and messagebox dialogs instead.
+    """
+    say = say or print
+    _cli_retry = lambda msg: retry_prompt()  # noqa: E731
+    confirm_retry = confirm_retry or _cli_retry
+    ask_text = ask_text or (lambda prompt: input(prompt))
+    say("\n--- Dependencies: getting the database and browser ready ---")
     try:
         subprocess.run(["docker", "info"], capture_output=True, check=True)
-        print("Docker found -- starting the database...")
+        say("Docker found -- starting the database...")
         subprocess.run(["docker", "compose", "up", "-d", "db"], cwd=str(install_dir), check=True)
-        print("Waiting for the database to be ready...")
+        say("Waiting for the database to be ready...")
         for _ in range(30):
             db_ok, _ = check_db()
             if db_ok:
@@ -234,38 +260,38 @@ def ensure_deps_cli(install_dir):
             subprocess.run(["docker", "compose", "exec", "-T", "db",
                             "psql", "-U", "postgres", "-d", "job_scraper",
                             "-f", "/schema.sql"], cwd=str(install_dir), check=False)
-        print("Database is ready.")
+        say("Database is ready.")
     except Exception:
         if os.name == "nt":
-            print("No Docker -- installing Postgres via winget...")
+            say("No Docker -- installing Postgres via winget...")
             try:
                 subprocess.run(["winget", "install", "--accept-source-agreements",
                                 "PostgreSQL.PostgreSQL.16"], check=True)
                 subprocess.run(["createdb", "job_scraper"], check=False)
                 subprocess.run(["psql", "-d", "job_scraper", "-f", str(install_dir / "schema.sql")],
                                check=False)
-                print("Postgres installed and database created.")
+                say("Postgres installed and database created.")
             except Exception as e:
-                print(f"Postgres install failed ({e}). Try again or ask for help.")
-                return retry_prompt()
+                say(f"Postgres install failed ({e}). Try again or ask for help.")
+                return confirm_retry("Something didn't finish. Retry?")
         else:
-            print("No Docker here, so this machine needs its own Postgres.")
-            print("Follow the native-Postgres steps in README.md section 2 (Setup),")
-            print("then re-run this wizard. Press Enter when done, or type 'skip'.")
-            ans = input("> ").strip().lower()
+            say("No Docker here, so this machine needs its own Postgres.")
+            say("Follow the native-Postgres steps in README.md section 2 (Setup),")
+            say("then re-run this wizard. Press Enter when done, or type 'skip'.")
+            ans = ask_text("> ").strip().lower()
             if ans != "skip":
                 db_ok, db_msg = check_db()
-                print(db_msg)
+                say(db_msg)
                 if not db_ok:
-                    return retry_prompt()
+                    return confirm_retry("Something didn't finish. Retry?")
     try:
         subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
                        check=True, capture_output=True)
-        print("Browser engine (Chromium) is ready.")
+        say("Browser engine (Chromium) is ready.")
     except Exception:
-        print("Chromium is not installed yet -- the first scrape will install it,")
-        print("or run: python3 -m playwright install chromium")
-        return retry_prompt()
+        say("Chromium is not installed yet -- the first scrape will install it,")
+        say("or run: python3 -m playwright install chromium")
+        return confirm_retry("Something didn't finish. Retry?")
     return True
 
 
@@ -432,6 +458,29 @@ def run_gui(install_dir):
         search["site_names"] = selected_boards()
         save_config(cfg)
         install_dir.mkdir(parents=True, exist_ok=True)
+        # Dependencies step: same routine the text wizard uses, with progress
+        # shown on the install page and plain-language Retry dialogs on failure.
+        show(4)
+        next_btn["state"] = "disabled"
+        back_btn["state"] = "disabled"
+        deps_status.set("Starting...")
+        root.update_idletasks()
+
+        def gui_say(msg):
+            deps_status.set((deps_status.get() + "\n" + msg).strip())
+            root.update_idletasks()
+
+        ok = ensure_deps_cli(
+            install_dir,
+            say=gui_say,
+            confirm_retry=lambda msg: messagebox.askretrycancel("Setup", msg + "\nRetry?"),
+            ask_text=lambda prompt: simpledialog.askstring("Setup", prompt) or "",
+        )
+        next_btn["state"] = "normal"
+        back_btn["state"] = "normal"
+        if not ok:
+            messagebox.showinfo("Setup", "Setup stopped -- run the wizard again when ready.")
+            return
         messagebox.showinfo("Done", "Setup saved! Open JobScraper from the desktop shortcut.")
         root.destroy()
 
@@ -489,6 +538,8 @@ def run_gui(install_dir):
     tk.Label(f4, text=f"Install folder:\n{install_dir}", justify="left").pack()
     tk.Label(f4, text="Next, the wizard gets the database and browser engine ready.\n"
                       "This can take a few minutes.", justify="left").pack(pady=8)
+    deps_status = tk.StringVar(value="")
+    tk.Label(f4, textvariable=deps_status, justify="left", wraplength=480).pack(pady=4)
     frames.append(f4)
 
     # Page 5: finish
