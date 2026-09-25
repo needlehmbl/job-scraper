@@ -10,6 +10,7 @@ import {
   YAxis,
 } from 'recharts'
 import { defaultKeeper, findDuplicateGroups } from './duplicates.js'
+import { ClipLoader } from 'react-spinners'
 
 const API = 'http://127.0.0.1:8000'
 
@@ -1355,10 +1356,7 @@ function describeScrapeProgress(p) {
               className="inline-flex items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
             >
               {scraping && (
-                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
-                </svg>
+                <ClipLoader size={14} color="currentColor" speedMultiplier={1} aria-hidden="true" />
               )}
               {scraping ? `Scraping… ${formatScrapeElapsed(scrapeElapsed)}` : 'Scrape new jobs'}
             </button>
@@ -1390,10 +1388,7 @@ function describeScrapeProgress(p) {
         {scrapeNote && (
           <div className="mt-2 flex flex-wrap items-center gap-2" role="status">
             {scraping && (
-              <svg className="h-3.5 w-3.5 animate-spin text-neutral-400" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4z" />
-              </svg>
+              <ClipLoader size={14} color="currentColor" speedMultiplier={1} aria-hidden="true" />
             )}
             <p className="text-xs text-neutral-500 dark:text-neutral-400">
               {scrapeNote}
