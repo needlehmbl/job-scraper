@@ -27,11 +27,14 @@ to postings from a browser tab.
 
 ## Demo
 
-`demo/job-scraper-demo.mp4` (~4 min, silent) walks the dashboard end to
-end: triage, duplicate scan, Filtered review, resume tailoring, xlsx
-export, and a real scrape with a time-lapse through the long middle.
-Retake with `venv/bin/python demo/record-demo.py` (full take) and rebuild
-the cut with `demo/assemble.sh` — see the script headers.
+[![Job Scraper dashboard demo](demo/preview.gif)](demo/job-scraper-demo.mp4)
+
+Click the preview for the full video (`demo/job-scraper-demo.mp4`,
+~4 min, silent): dashboard triage, duplicate scan, Filtered review,
+resume tailoring, xlsx export, and a real scrape with a time-lapse
+through the long middle. Retake with
+`venv/bin/python demo/record-demo.py` (full take) and rebuild the cut
+with `demo/assemble.sh` — see the script headers.
 
 ## 1. Architecture
 
