@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -48,6 +49,14 @@ app.include_router(scrape.router, tags=["scrape"])
 app.include_router(export.router, tags=["export"])
 app.include_router(tailor.router, tags=["tailor"])
 app.include_router(admin.router, tags=["admin"])
+
+# Serve dashboard static files in packaged mode (frozen by PyInstaller)
+if getattr(sys, "frozen", False):
+    dashboard_dist = Path(sys.executable).resolve().parent / "dashboard" / "dist"
+    if dashboard_dist.is_dir():
+        app.mount("/", StaticFiles(directory=dashboard_dist, html=True), name="dashboard")
+    else:
+        print(f"[api] WARNING: dashboard/dist not found at {dashboard_dist}")
 
 
 @app.get("/health")

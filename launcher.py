@@ -65,16 +65,23 @@ def main():
     if args.check_updates:
         return check_updates()
     ensure_config()
+    api_proc = None
     if not args.native_fallback:
         try:
             subprocess.run(["docker", "info"], capture_output=True, check=True)
             compose_up()
         except Exception:
-            print("[launcher] Docker not available -- start the API manually "
-                  "(venv/bin/uvicorn api.main:app) and re-run with --native-fallback.")
-            return 1
+            # Docker not available — start the API ourselves (packaged exe / native fallback).
+            api_proc = subprocess.Popen(
+                [sys.executable, "-m", "uvicorn", "api.main:app",
+                 "--host", "127.0.0.1", "--port", "8000"],
+                cwd=str(ROOT),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(3)
     if not wait_ready():
         print("[launcher] API did not become ready -- see api.log.")
+        if api_proc:
+            api_proc.terminate()
         return 1
     print(f"[launcher] opening {DASH_URL} in your default browser.")
     webbrowser.open(DASH_URL)
@@ -84,6 +91,9 @@ def main():
             time.sleep(3600)
     except KeyboardInterrupt:
         pass
+    finally:
+        if api_proc:
+            api_proc.terminate()
     return 0
 
 
