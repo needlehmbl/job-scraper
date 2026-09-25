@@ -134,6 +134,12 @@ def parse_cards(html: str) -> list[dict]:
                 company = txt
         desc_el = li.select_one("p.mb-0")
         desc = desc_el.get_text(" ", strip=True) if desc_el else ""
+        if (company and location and _is_location_span(company)
+                and not _is_location_span(location)):
+            # Misordered card spans put the locality where the employer
+            # goes ("company=Metro Manila"); swap so the fingerprint key
+            # is built from the real employer, not the locality.
+            location, company = company, location
         out.append({
             "title": title,
             "company": company,

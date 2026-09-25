@@ -9,7 +9,7 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { defaultKeeper, findDuplicateGroups } from './duplicates.js'
+import { defaultKeeper, findDuplicateGroups, findFuzzyGroups } from './duplicates.js'
 import { ClipLoader } from 'react-spinners'
 
 const API = 'http://127.0.0.1:8000'
@@ -521,6 +521,7 @@ export default function App() {
   const [filteredNote, setFilteredNote] = useState('')
   const [restoring, setRestoring] = useState(null)
   const [showDupes, setShowDupes] = useState(false)
+  const [dupeScanActive, setDupeScanActive] = useState(false)
   const [keepers, setKeepers] = useState({})
   const [dupeBusy, setDupeBusy] = useState(null)
   const [selectedDupeGroups, setSelectedDupeGroups] = useState(() => new Set())
@@ -667,7 +668,17 @@ export default function App() {
     [filteredJobs]
   )
 
-  const dupeGroups = useMemo(() => findDuplicateGroups(jobs), [jobs])
+  // On-demand full-DB duplicate scan: exact groups (same normalized
+  // title + company) plus fuzzy near-matches (same company, overlapping
+  // titles — aggregator SEO suffixes, reposts). Gated behind the Scan
+  // button; recomputes automatically when jobs change (e.g. after
+  // confirming a group), so results never go stale.
+  const dupeScan = useMemo(() => {
+    if (!dupeScanActive) return { exact: [], fuzzy: [] }
+    return { exact: findDuplicateGroups(jobs), fuzzy: findFuzzyGroups(jobs) }
+  }, [dupeScanActive, jobs])
+
+  const dupeGroups = useMemo(() => [...dupeScan.exact, ...dupeScan.fuzzy], [dupeScan])
 
   const dupeExtraRows = useMemo(
     () => dupeGroups.reduce((n, g) => n + g.rows.length - 1, 0),
@@ -1761,21 +1772,53 @@ function describeScrapeProgress(p) {
           )}
         </section>
 
-        {tab === 'jobs' && dupeGroups.length > 0 && (
+        {tab === 'jobs' && (
         <section className="mt-6 overflow-hidden rounded-xl border border-amber-200 bg-white dark:border-amber-900 dark:bg-neutral-900">
-          <button
-            onClick={() => setShowDupes((v) => !v)}
-            className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-amber-50 dark:hover:bg-neutral-800/50"
-            title="Same normalized title at the same company — tick the rows to keep per group, mark the rest DUPLICATE"
-          >
-            <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
-              {showDupes ? '▾' : '▸'} Possible duplicates — {dupeGroups.length} group{dupeGroups.length === 1 ? '' : 's'}, {dupeExtraRows} repeat row{dupeExtraRows === 1 ? '' : 's'}
-            </span>
-            <span className="text-xs text-neutral-400 dark:text-neutral-500">
-              same title + company · you confirm each group
-            </span>
-          </button>
-          {showDupes && (
+          {!dupeScanActive ? (
+            <button
+              onClick={() => {
+                setDupeScanActive(true)
+                setShowDupes(true)
+              }}
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-amber-50 dark:hover:bg-neutral-800/50"
+              title="Scan every tracked posting for exact and near-duplicate titles at the same company — you confirm each group"
+            >
+              <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                ▸ Scan for duplicates
+              </span>
+              <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                exact + similar titles · full DB · you confirm each group
+              </span>
+            </button>
+          ) : (
+            <div className="flex w-full items-center justify-between gap-3 px-4 py-3 hover:bg-amber-50 dark:hover:bg-neutral-800/50">
+              <button
+                onClick={() => setShowDupes((v) => !v)}
+                className="flex flex-1 items-center justify-between gap-3 text-left"
+                title="Same normalized title at the same company (exact), or overlapping titles (likely / possible) — tick the rows to keep per group, mark the rest DUPLICATE"
+              >
+                <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                  {showDupes ? '▾' : '▸'} Duplicates — {dupeScan.exact.length} exact,{' '}
+                  {dupeScan.fuzzy.filter((g) => g.likely).length} likely,{' '}
+                  {dupeScan.fuzzy.filter((g) => !g.likely).length} possible, {dupeExtraRows} repeat row{dupeExtraRows === 1 ? '' : 's'}
+                </span>
+                <span className="text-xs text-neutral-400 dark:text-neutral-500">
+                  you confirm each group
+                </span>
+              </button>
+              <button
+                onClick={() => {
+                  setDupeScanActive(false)
+                  setShowDupes(false)
+                }}
+                className="rounded-md border border-neutral-300 px-2 py-0.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                title="Hide duplicate results (scan again any time)"
+              >
+                Hide
+              </button>
+            </div>
+          )}
+          {dupeScanActive && showDupes && (
           <div className="flex flex-wrap items-center gap-3 border-t border-amber-200 bg-amber-50/60 px-4 py-2.5 dark:border-amber-900 dark:bg-neutral-800/40">
             <label className="flex items-center gap-2 text-xs font-medium text-neutral-700 dark:text-neutral-300">
               <input
@@ -1811,7 +1854,7 @@ function describeScrapeProgress(p) {
             })()}
           </div>
           )}
-          {showDupes && (
+          {dupeScanActive && showDupes && (
           <div className="divide-y divide-neutral-100 border-t border-amber-200 dark:divide-neutral-800 dark:border-amber-900">
             {dupeGroups.map((group) => {
               const keptIds = keptIdsFor(group)
@@ -1839,7 +1882,23 @@ function describeScrapeProgress(p) {
                       {group.rows[0].title}{' '}
                       <span className="font-normal text-neutral-500 dark:text-neutral-400">
                         @ {group.rows[0].company} ({group.rows.length})
-                      </span>
+                      </span>{' '}
+                      {group.fuzzy && (
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ${
+                            group.likely
+                              ? 'bg-amber-100 text-amber-700 ring-amber-200 dark:bg-amber-900 dark:text-amber-300 dark:ring-amber-800'
+                              : 'bg-neutral-100 text-neutral-500 ring-neutral-200 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700'
+                          }`}
+                          title={
+                            group.likely
+                              ? 'One title contains the other — likely the same listing reposted with extra words'
+                              : 'Titles overlap but neither contains the other — needs your judgment'
+                          }
+                        >
+                          {group.likely ? 'likely' : 'possible'}
+                        </span>
+                      )}
                     </p>
                     <button
                       onClick={() => markGroupDupe(group)}

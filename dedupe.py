@@ -16,8 +16,9 @@ dedup (locations.py gate). The raw location is still stored on the row
 for audit; it just doesn't split the key.
 
 Normalization is deliberately aggressive so minor board variations merge:
-case, punctuation, extra whitespace, and common company suffixes
-("inc", "corp", "philippines", "in the philippines", ...) are stripped.
+case, punctuation, extra whitespace, leading aggregator junk ("careers
+at ...") and common company suffixes ("inc", "corp", "philippines",
+"in the philippines", ...) are stripped.
 """
 import re
 
@@ -38,6 +39,17 @@ _COMPANY_PHRASES = (
     "in the philippines",
 )
 
+# Leading junk aggregators (notably trabajo) prepend to company names
+# ("Careers at Eucalyptus" vs "Eucalyptus" for the same employer).
+# Stripped from the START of the normalized company only.
+_COMPANY_PREFIXES = (
+    "careers at ",
+    "jobs at ",
+    "hiring at ",
+    "hiring by ",
+    "jobs by ",
+)
+
 _STOPWORDS_COMPANY = frozenset()  # reserved: keep company tokens intact
 
 
@@ -55,6 +67,11 @@ def normalize_company(company) -> str:
         # strip occurrences anywhere ("accenture in the philippines" -> "accenture")
         s = s.replace(phrase, " ")
     s = re.sub(r"\s+", " ", s).strip()
+    for prefix in _COMPANY_PREFIXES:
+        # strip aggregator junk from the start ("careers at eucalyptus"
+        # -> "eucalyptus"); repeat in case of stacked prefixes
+        while s.startswith(prefix):
+            s = s[len(prefix):].strip()
     toks = s.split()
     # strip trailing legal/region suffixes repeatedly ("... corp ph" -> "...")
     while toks and toks[-1] in _COMPANY_SUFFIXES:
