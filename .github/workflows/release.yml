@@ -16,7 +16,10 @@ jobs:
           JobScraper.desktop schema.sql config.yaml .env.example
           dashboard/dist README.md
       - uses: actions/upload-artifact@v4
-        with: {name: linux-tarball, path: jobscraper-linux.tar.gz}
+        with:
+          name: linux-tarball
+          path: jobscraper-linux.tar.gz
+          if-no-files-found: error
   macos:
     # The tarball is pure .py/.sh/JS, so one build serves Intel and Apple
     # Silicon alike -- the runner's own architecture does not matter.
@@ -32,7 +35,10 @@ jobs:
           setup_wizard.py launcher.py schema.sql config.yaml .env.example
           dashboard/dist README.md
       - uses: actions/upload-artifact@v4
-        with: {name: macos-tarball, path: jobscraper-macos.tar.gz}
+        with:
+          name: macos-tarball
+          path: jobscraper-macos.tar.gz
+          if-no-files-found: error
   windows:
     runs-on: windows-latest
     steps:
@@ -50,9 +56,38 @@ jobs:
         with:
           path: installer/jobscraper.iss
         env: {APP_VERSION: "${{ github.ref_name }}"}
-      - run: Compress-Archive -Path dist/JobScraper -DestinationPath jobscraper-win64.zip
+      # Python's zipfile rather than Compress-Archive: the PyInstaller
+      # onedir tree is deeply nested and large, and Compress-Archive has a
+      # 2 GB per-file limit and is very slow on that shape.
+      - name: Zip the portable bundle
+        run: |
+          python -c "
+          import shutil, pathlib
+          shutil.make_archive('jobscraper-win64', 'zip', 'dist/JobScraper')
+          p = pathlib.Path('jobscraper-win64.zip')
+          print(f'jobscraper-win64.zip: {p.stat().st_size/1e6:.1f} MB')
+          "
+      # iscc writes to installer/Output by default, and upload-artifact only
+      # warns when a glob matches nothing -- so a missing Windows build used
+      # to leave the release silently without any .exe or .zip. List the files
+      # and fail loudly instead.
+      - name: Verify Windows artifacts exist
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path installer\Output -Filter 'JobScraper-Setup-*.exe' -Recurse
+          $zip = Get-Item jobscraper-win64.zip -ErrorAction SilentlyContinue
+          $exe | ForEach-Object { "installer: $($_.FullName) ($([math]::Round($_.Length/1MB,1)) MB)" }
+          if ($zip) { "portable zip: $($zip.FullName) ($([math]::Round($zip.Length/1MB,1)) MB)" }
+          if (-not $exe) { throw "No JobScraper-Setup-*.exe produced -- the installer step did not run." }
+          if (-not $zip) { throw "jobscraper-win64.zip was not created." }
+          if ($zip.Length -lt 1MB) { throw "jobscraper-win64.zip is only $($zip.Length) bytes -- zipping failed." }
       - uses: actions/upload-artifact@v4
-        with: {name: windows-assets, path: "JobScraper-Setup-*.exe, jobscraper-win64.zip"}
+        with:
+          name: windows-assets
+          path: |
+            installer/Output/JobScraper-Setup-*.exe
+            jobscraper-win64.zip
+          if-no-files-found: error
   publish:
     needs: [linux, macos, windows]
     runs-on: ubuntu-latest
