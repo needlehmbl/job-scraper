@@ -50,6 +50,14 @@ git ls-files -z -- . "${excludes[@]}" > "$list"
 }
 printf 'dashboard/dist\0' >> "$list"
 
+# Bake the release tag in as a VERSION file. The app runs inside the container
+# this tarball builds, so CI cannot pass a version through the environment --
+# api/routes/admin.py reads this file instead, and reports "dev" when it is
+# absent (a source checkout). The file is gitignored, so it is untracked and
+# has to be appended to the list by hand, same as dashboard/dist.
+printf '%s\n' "${JOBSCRAPER_VERSION:-dev}" > VERSION
+printf 'VERSION\0' >> "$list"
+
 tar -czf "$out" --null --files-from="$list"
 
 # Guard the bug this script exists to prevent: everything the shipped
@@ -62,7 +70,7 @@ for required in \
   requirements.txt Dockerfile docker-compose.yml .dockerignore .env.example \
   api/main.py db.py main.py notifier.py config.yaml schema.sql \
   run.sh stop.sh setup.sh setup_wizard.py launcher.py JobScraper.desktop \
-  README.md dashboard/dist/index.html
+  README.md VERSION dashboard/dist/index.html
 do
   if ! grep -qxF "$required" <<<"$shipped"; then
     echo "make-tarball: MISSING from $out: $required" >&2

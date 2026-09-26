@@ -10,12 +10,27 @@ block_cipher = None
 # binaries for every platform, which is what a cross-built spec needs.
 tls_datas, tls_binaries, tls_hidden = collect_all("tls_client")
 
+# The release tag, written to ../VERSION by the release job. It rides along as a
+# data file so api/routes/admin.py can report the installed version; CI has no
+# other way to tell the exe what it is. Optional: a local build that skipped the
+# step still works, and the app then reports "dev".
+#
+# Anchor the path to SPECPATH (this file's own directory), not to os.getcwd():
+# PyInstaller resolves the datas entries against SPECPATH, but the spec body
+# itself still runs in the directory the command was launched from. Checking
+# "../VERSION" against the cwd is False when you build from the repo root --
+# and the data file is then dropped without a word.
+import os
+version_file = os.path.join(SPECPATH, os.pardir, "VERSION")
+version_datas = [(version_file, ".")] if os.path.exists(version_file) else []
+
 a = Analysis(
     ["../launcher.py"],
     pathex=[".."],
     binaries=tls_binaries,
     datas=[("../dashboard/dist", "dashboard/dist"), ("../config.yaml", "."),
-           ("../schema.sql", "."), ("../setup_wizard.py", ".")] + tls_datas,
+           ("../schema.sql", "."), ("../setup_wizard.py", ".")]
+          + tls_datas + version_datas,
     # launcher.py starts the API with uvicorn.run("api.main:app"), an import
     # string, so PyInstaller's static walk never sees the app and the frozen
     # exe dies with "No module named 'api'". Listing api.main as a hidden

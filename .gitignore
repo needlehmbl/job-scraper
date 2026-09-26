@@ -17,6 +17,15 @@ resume_bank.yaml
 resume_bank.extracted.yaml
 usage_state.json
 
+# Generated at release time by installer/make-tarball.sh and the Windows
+# release job; never committed. api/routes/admin.py reads it to report the
+# installed version -- see AGENTS.md.
+/VERSION
+
+# PyInstaller output from a local frozen build (see AGENTS.md)
+/build/
+/dist/
+
 # Office lock files
 *.~lock.*#
 

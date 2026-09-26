@@ -59,6 +59,7 @@ GitHub once it has landed on `main` at least once, so the first
    the exclude list in that script instead. New runtime files ship by default,
    which is the point: a hand-written list once shipped a release with no
    `api/` and no `requirements.txt`, so `docker compose build` could not work.
+   Each job also bakes the tag into a `VERSION` file -- see below.
 4. The release body is generated from every commit since the previous release,
    so the commit messages written on `dev` become the changelog.
 
@@ -72,6 +73,25 @@ Consequences worth remembering before merging:
 
 Manual tagging still works if a release is ever needed without a merge:
 `git tag vX.Y.Z && git push origin vX.Y.Z`. That path skips the `test` gate.
+
+## The installed version
+
+`GET /updates/check` reports `current`, which comes from
+`api/routes/admin.py:resolve_version()`:
+
+1. `JOBSCRAPER_VERSION` in the environment, if set. This is the only channel a
+   source checkout or a hand-run process has, so keep it first.
+2. A `VERSION` file. A packaged build cannot be told its version any other way:
+   the container only gets what `docker-compose.yml` passes in, and a frozen exe
+   has no environment at all. So each release bakes the tag into a `VERSION`
+   file at the root of the artifact -- `installer/make-tarball.sh` writes it and
+   adds it to the archive, the Windows job writes it and the spec ships it as a
+   data file (landing in `sys._MEIPASS`).
+3. Otherwise `"dev"`, and `needs_update()` never nags for a `"dev"` build.
+
+The file is gitignored and only trusted when it starts with `v`, so a stale one
+left behind by a local build cannot make a source checkout claim to be a
+release. `tests/test_version_resolution.py` covers the precedence.
 
 ## Tests
 
@@ -94,6 +114,11 @@ and have to be maintained by hand:
   everything after it -- that is how `/health` became a 404 in the packaged
   app, and the launcher then waited 60s and quit. `tests/test_frozen_routes.py`
   guards the order.
+- Data-file paths in the spec must be anchored to `SPECPATH` (the spec's own
+  directory), not to `os.getcwd()`. PyInstaller resolves `datas` against
+  `SPECPATH`, but the spec body still runs in the directory the command was
+  launched from, so an `os.path.exists("../VERSION")` guard silently evaluates
+  False when you build from the repo root and drops the file with no warning.
 
 Do not trust the spec by reading it. PyInstaller builds on Linux, so the whole
 graph can be checked before merging:

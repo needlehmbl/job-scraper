@@ -21,6 +21,7 @@ jobs:
         with: {bun-version: "1.4.2"}
       - run: cd dashboard && bun install --frozen-lockfile && bun run build
       - run: ./installer/make-tarball.sh jobscraper-linux.tar.gz
+        env: {JOBSCRAPER_VERSION: "${{ inputs.tag || github.ref_name }}"}
       - uses: actions/upload-artifact@v4
         with:
           name: linux-tarball
@@ -37,6 +38,7 @@ jobs:
         with: {bun-version: "1.4.2"}
       - run: cd dashboard && bun install --frozen-lockfile && bun run build
       - run: ./installer/make-tarball.sh jobscraper-macos.tar.gz
+        env: {JOBSCRAPER_VERSION: "${{ inputs.tag || github.ref_name }}"}
       - uses: actions/upload-artifact@v4
         with:
           name: macos-tarball
@@ -54,6 +56,16 @@ jobs:
       - run: cd dashboard; bun install --frozen-lockfile; bun run build
       - run: pip install -r requirements.txt pyinstaller
       - run: python -m playwright install chromium
+      # api/routes/admin.py reads this file to report the installed version, and
+      # JobScraper.spec ships it into the bundle as a data file. A packaged exe
+      # has no environment to be told its version in, so this is the only way.
+      - name: Bake the release tag into VERSION
+        shell: pwsh
+        run: |
+          if (-not $env:APP_VERSION) { throw "APP_VERSION is not set" }
+          Set-Content -Path VERSION -Value $env:APP_VERSION -NoNewline
+          "VERSION baked in: $(Get-Content VERSION)"
+        env: {APP_VERSION: "${{ inputs.tag || github.ref_name }}"}
       - run: pyinstaller --noconfirm installer/JobScraper.spec
         env: {APP_VERSION: "${{ inputs.tag || github.ref_name }}"}
       - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
@@ -85,6 +97,11 @@ jobs:
           if (-not $exe) { throw "No JobScraper-Setup-*.exe produced -- the installer step did not run." }
           if (-not $zip) { throw "jobscraper-win64.zip was not created." }
           if ($zip.Length -lt 1MB) { throw "jobscraper-win64.zip is only $($zip.Length) bytes -- zipping failed." }
+          # A bundle with no VERSION ships as "dev" and never learns about new
+          # releases, so a silently missing data file has to fail the build.
+          $ver = Get-Item dist\JobScraper\_internal\VERSION -ErrorAction SilentlyContinue
+          if (-not $ver) { throw "dist\JobScraper\_internal\VERSION is missing -- the exe cannot report its version." }
+          "frozen VERSION: $((Get-Content dist\JobScraper\_internal\VERSION -Raw).Trim())"
       # Collect both Windows artifacts into one flat directory. Uploading the
       # exe from installer/Output/ made download-artifact preserve that nested
       # path, so the publish job's `sha256sum *` hit a directory and failed.
