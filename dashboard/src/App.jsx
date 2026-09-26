@@ -11,8 +11,24 @@ import {
 } from 'recharts'
 import { defaultKeeper, findDuplicateGroups, findFuzzyGroups } from './duplicates.js'
 import { ClipLoader } from 'react-spinners'
+import { ToastContainer, toast } from 'react-toast'
 
 const API = 'http://127.0.0.1:8000'
+
+// How long the post-undo row highlight lasts. Kept in sync with the
+// .undo-reveal animation in index.css.
+const REVEAL_MS = 2600
+
+// Row id -> DOM key. Filtered-review rows share the numeric id space with
+// jobs, so they are prefixed to keep the two apart.
+const revealKey = (list, row) => `${list === 'filtered' ? 'f' : ''}${row.id}`
+
+// react-toast only lets a toast override colour inline, so the neutral
+// pill (same pairing as the floating undo button) is passed per theme.
+const UNDO_TOAST = {
+  light: { backgroundColor: '#171717', color: '#fafafa' },
+  dark: { backgroundColor: '#f5f5f5', color: '#171717' },
+}
 
 const STATUSES = ['NEW', 'REVIEWED', 'SKIP', 'MISMATCH', 'EXP_GAP', 'EXPIRED', 'DUPLICATE']
 // Full triage list for the filter dropdown (APPLIED rows live in the
@@ -327,7 +343,7 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
 
   return (
     <>
-      <tr className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+      <tr data-row-id={job.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
         <td className="px-4 py-3">
           <a href={job.url} target="_blank" rel="noreferrer"
             className="font-medium text-neutral-800 hover:text-black hover:underline dark:text-neutral-200 dark:hover:text-white">
@@ -548,6 +564,11 @@ export default function App() {
   const [undoArmed, setUndoArmed] = useState(false)
   const [showUndoConfirm, setShowUndoConfirm] = useState(false)
   const [undoBusy, setUndoBusy] = useState(false)
+  // Reveal request for the last undo: { ids, tab }. Not rendered from -- the
+  // effect below does the scroll/highlight once React has painted the rows
+  // the undo put back. `tab` is a hint for undos whose rows only exist in
+  // another tab (a restore/dismiss re-appears in Filtered review).
+  const [revealReq, setRevealReq] = useState(null)
 
   // Shutdown (packaged dist only): power button -> confirm modal -> POST
   // /shutdown -> stopped screen. Dev systemd units restart on exit, so the
@@ -879,7 +900,77 @@ export default function App() {
     setScoreDir(null)
     setPostedDir(null)
     setScrapedDir((d) => (d === null ? 'desc' : d === 'desc' ? 'asc' : null))
-  }, [])
+  }, []  )
+
+  const revealLists = useMemo(
+
+    () => ({ jobs: sortedJobs, applications: applicationRows, filtered: visibleFiltered }),
+    [sortedJobs, applicationRows, visibleFiltered]
+  )
+  // useState setters are stable, so this map never needs rebuilding.
+  const revealPagers = useMemo(
+    () => ({ jobs: setJobsPage, applications: setAppsPage, filtered: setFiltPage }),
+    []
+  )
+
+  // Reveal the rows an undo touched: page to them if they are not on the
+  // current page, scroll the first into view, and fade a highlight over all
+  // of them. The highlight colour comes from CSS (.undo-reveal in index.css)
+  // so it inverts with the theme. This effect deliberately returns no
+  // cleanup: it clears revealReq, so any cleanup here would fire on the
+  // next render and strip the highlight it just added.
+  useEffect(() => {
+    if (!revealReq) return
+    if (revealReq.tab && revealReq.tab !== tab) {
+      setTab(revealReq.tab)
+      return
+    }
+    const nodes = revealReq.ids
+      .map((id) => document.querySelector(`[data-row-id="${id}"]`))
+      .filter(Boolean)
+    if (!nodes.length && revealReq.list) {
+      // Not rendered -- almost certainly paginated away. Jump to its page;
+      // the page state below is a dependency, so this effect runs again.
+      const list = revealLists[revealReq.list]
+      const idx = list.findIndex((r) => revealKey(revealReq.list, r) === revealReq.ids[0])
+      if (idx >= 0) {
+        revealPagers[revealReq.list](Math.floor(idx / PAGE_SIZE) + 1)
+        return
+      }
+    }
+    setRevealReq(null)
+    if (!nodes.length) return
+    // Only move the viewport when the row is off-screen -- an undo of
+    // something already in view should not yank the page around.
+    const rect = nodes[0].getBoundingClientRect()
+    if (rect.top < 72 || rect.bottom > window.innerHeight - 24) {
+      nodes[0].scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+    nodes.forEach((n) => n.classList.add('undo-reveal'))
+    setTimeout(
+      () => nodes.forEach((n) => n.classList.remove('undo-reveal')),
+      REVEAL_MS
+    )
+  }, [
+    revealReq,
+    tab,
+    revealLists,
+    revealPagers,
+    jobsPageSafe,
+    appsPageSafe,
+    filtPageSafe,
+  ])
+
+  // Unmount-only sweep, so a reveal in flight when the app goes away does
+  // not leave stray highlight classes behind.
+  useEffect(
+    () => () => {
+      document
+        .querySelectorAll('.undo-reveal')
+        .forEach((n) => n.classList.remove('undo-reveal'))
+    },
+    []
+  )
 
   const cycleScoreSort = useCallback(() => {
     // Activating score sort clears the other sorts so only one wins.
@@ -911,12 +1002,23 @@ export default function App() {
     []
   )
 
+  // Undo reverses the last action *in place*: the optimistic update above (or
+  // the row the endpoint hands back) is the whole truth, so there is no
+  // fetchAll() here -- refetching is what made undo feel like a page reload
+  // and threw away the user's filters, search and scroll position. The only
+  // exception is a failure, where the server is the better source of truth.
   const performUndo = useCallback(async () => {
     if (!lastAction || undoBusy) return
     setUndoBusy(true)
+    let revealed = []
+    let listHint = null
+    let tabHint = null
     try {
       const a = lastAction
       if (a.kind === 'status') {
+        revealed = a.ids.map(({ id }) => id)
+        // APPLIED rows live in the Applications tab, everything else in Jobs.
+        listHint = a.ids[0]?.prev === 'APPLIED' ? 'applications' : 'jobs'
         a.ids.forEach(({ id, prev }) =>
           updateJobs(id, { status: prev })
         )
@@ -930,6 +1032,8 @@ export default function App() {
           )
         )
       } else if (a.kind === 'stage') {
+        revealed = [a.id]
+        listHint = a.prevStatus === 'APPLIED' ? 'applications' : 'jobs'
         updateJobs(a.id, { stage: a.prevStage, status: a.prevStatus })
         if (a.prevStatus === 'APPLIED') {
           await fetch(`${API}/jobs/${a.id}/stage`, {
@@ -945,6 +1049,8 @@ export default function App() {
           })
         }
       } else if (a.kind === 'followup') {
+        revealed = [a.id]
+        listHint = jobs.find((j) => j.id === a.id)?.status === 'APPLIED' ? 'applications' : 'jobs'
         updateJobs(a.id, { follow_up_at: a.prev })
         await fetch(`${API}/jobs/${a.id}/followup`, {
           method: 'PATCH',
@@ -956,6 +1062,16 @@ export default function App() {
           method: 'POST',
         })
         if (!r.ok) throw new Error(`unrestore failed (${r.status})`)
+        // The endpoint returns the un-restored row, so the posting goes back
+        // into Filtered review locally instead of waiting on a refetch.
+        const row = await r.json()
+        revealed = [`f${row.id}`]
+        listHint = 'filtered'
+        tabHint = 'filtered'
+        setFilteredJobs((prev) => [row, ...prev.filter((f) => f.id !== row.id)])
+        // unrestore also drops the auto-created NEW triage row; /jobs is the
+        // only thing that needs re-syncing (stats catch up on the poll).
+        refreshJobs()
       } else if (a.kind === 'dismiss') {
         const r = await fetch(`${API}/filtered/reinsert`, {
           method: 'POST',
@@ -963,16 +1079,23 @@ export default function App() {
           body: JSON.stringify(a.snapshot),
         })
         if (!r.ok) throw new Error(`reinsert failed (${r.status})`)
+        const row = await r.json()
+        revealed = [`f${row.id}`]
+        listHint = 'filtered'
+        tabHint = 'filtered'
+        setFilteredJobs((prev) => [row, ...prev.filter((f) => f.id !== row.id)])
       }
       setLastAction(null)
       setShowUndoConfirm(false)
-      await fetchAll()
+      setRevealReq({ ids: revealed, tab: tabHint, list: listHint })
+      toast.success(`Undone — ${a.label}`, UNDO_TOAST[dark ? 'dark' : 'light'])
     } catch (e) {
       console.error('undo failed:', e)
+      toast.error(`Undo failed: ${e.message}`)
       await fetchAll()
     }
     setUndoBusy(false)
-  }, [lastAction, undoBusy, updateJobs, fetchAll])
+  }, [lastAction, undoBusy, updateJobs, fetchAll, refreshJobs, jobs, dark])
 
   const changeStatus = useCallback(
     async (job, nextStatus) => {
@@ -2405,7 +2528,7 @@ function describeScrapeProgress(p) {
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {jobsPageRows.map((job) => (
                   <Fragment key={job.id}>
-                  <tr className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                  <tr data-row-id={job.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
                     <td className="px-4 py-3">
                       <input
                         type="checkbox"
@@ -2620,7 +2743,7 @@ function describeScrapeProgress(p) {
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {filtPageRows.map((job) => (
-                  <tr key={job.id} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                  <tr key={job.id} data-row-id={`f${job.id}`} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
                     <td className="px-4 py-3">
                       <a
                         href={job.url}
@@ -2947,11 +3070,14 @@ function describeScrapeProgress(p) {
           onClick={() => lastAction && setShowUndoConfirm(true)}
           disabled={!lastAction}
           title={lastAction ? `Undo: ${lastAction.label}` : 'Nothing to undo'}
-          className="fixed bottom-6 right-6 z-30 flex h-14 w-14 items-center justify-center rounded-full bg-neutral-900 text-2xl text-white shadow-xl transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+          aria-label="Undo last action"
+          className="fixed bottom-6 right-6 z-30 flex h-11 w-11 items-center justify-center rounded-2xl bg-neutral-900 text-xl text-white shadow-xl transition hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
         >
           ↺
         </button>
       )}
+
+      <ToastContainer position="top-right" delay={3200} />
 
       {showUndoConfirm && lastAction && (
         <div

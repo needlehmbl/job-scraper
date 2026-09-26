@@ -1,3 +1,56 @@
 @import "tailwindcss";
 
 @variant dark (&:where(.dark, .dark *));
+
+/* Post-undo row reveal: a soft wash in the opposite tone of the row, so it
+   reads as black text-highlight on light rows and white on dark rows. The
+   duration matches REVEAL_MS in App.jsx. */
+@keyframes undo-reveal {
+  0% {
+    background-color: rgba(0, 0, 0, 0.16);
+  }
+  70% {
+    background-color: rgba(0, 0, 0, 0.1);
+  }
+  100% {
+    background-color: rgba(0, 0, 0, 0);
+  }
+}
+
+@keyframes undo-reveal-dark {
+  0% {
+    background-color: rgba(255, 255, 255, 0.18);
+  }
+  70% {
+    background-color: rgba(255, 255, 255, 0.11);
+  }
+  100% {
+    background-color: rgba(255, 255, 255, 0);
+  }
+}
+
+.undo-reveal {
+  animation: undo-reveal 2.6s ease-out;
+}
+
+.dark .undo-reveal {
+  animation-name: undo-reveal-dark;
+}
+
+/* react-toast injects its own .toastContainer rule with no z-index, which
+   leaves toasts underneath the modal overlay. `body` lifts specificity so
+   this wins regardless of stylesheet order. */
+body .toastContainer {
+  z-index: 60;
+}
+
+/* Its icons ship as white strokes on a translucent white chip, which all but
+   disappears on the light pill dark mode uses. Mid grey reads on both. */
+body .toast .icon {
+  background-color: rgba(127, 127, 127, 0.22);
+}
+
+body .toast .icon path,
+body .toast .close path {
+  stroke: #a3a3a3;
+}
