@@ -4,24 +4,41 @@
 
 `dev` is the working branch. `main` is the release branch.
 
-- Do all work on `dev`. Commit and push `dev` as often as you like -- pushes to
-  `dev` run no CI and produce no release.
+- Do all work on `dev`. Commit as often as you like.
 - Merge `dev` into `main` **only when the change should reach users**. That
   merge is the release.
 
 ```bash
 git checkout dev      # normal working branch
-# ... work, commit, push dev ...
+# ... work, commit ...
 git checkout main && git merge dev && git push
 ```
 
 `main` must never be committed to directly. If a task explicitly says the
 change belongs on `main`, follow that instruction instead.
 
+### `dev` is local-only and must never be pushed
+
+The repository is **public**, so anything on a pushed branch is world-readable
+at `github.com/needlehmbl/job-scraper`. `dev` was deleted from the remote on
+purpose: unreleased work should not be public, and GitHub has no way to hide a
+single branch inside a public repo.
+
+- `git push origin dev` is **blocked** by `.git/hooks/pre-push` (a local,
+  uncommitted hook). If it refuses, that is working as intended -- merge to
+  `main` instead. Do not remove or bypass the hook to "fix" it.
+- `dev` has no upstream, so a bare `git push` from `dev` will not reach the
+  remote either.
+- The tradeoff is accepted: unreleased work lives only on this machine until it
+  is merged. There is no off-machine backup of `dev`.
+- `main` remains the only branch on the remote, and still the default branch.
+
 ## Releases
 
 Every push to `main` releases automatically, via
-`.github/workflows/auto-release.yml`:
+`.github/workflows/auto-release.yml`. Note this workflow is only registered by
+GitHub once it has landed on `main` at least once, so the first
+`dev` -> `main` merge is also the first auto-release:
 
 1. `auto-release` reads the newest tag, bumps it, and pushes an annotated tag
    at the `main` HEAD. Patch by default; a `major:` or `minor:` prefix on the
