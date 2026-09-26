@@ -50,9 +50,13 @@ app.include_router(export.router, tags=["export"])
 app.include_router(tailor.router, tags=["tailor"])
 app.include_router(admin.router, tags=["admin"])
 
-# Serve dashboard static files in packaged mode (frozen by PyInstaller)
+# Serve dashboard static files in packaged mode (frozen by PyInstaller).
+# ONEDIR builds put bundled data in an "_internal" subfolder next to the exe.
 if getattr(sys, "frozen", False):
-    dashboard_dist = Path(sys.executable).resolve().parent / "dashboard" / "dist"
+    _exe_dir = Path(sys.executable).resolve().parent
+    _internal = _exe_dir / "_internal"
+    _data_dir = _internal if _internal.is_dir() else _exe_dir
+    dashboard_dist = _data_dir / "dashboard" / "dist"
     if dashboard_dist.is_dir():
         app.mount("/", StaticFiles(directory=dashboard_dist, html=True), name="dashboard")
     else:

@@ -9,10 +9,15 @@ from pathlib import Path
 
 
 def base_dir():
-    # PyInstaller onedir: data files sit next to the exe, __file__ points
-    # into the temp _MEI bundle dir -- use the exe's dir when frozen.
+    # PyInstaller ONEDIR puts bundled data files in an "_internal" subfolder
+    # next to the exe (only onefile puts them beside it). __file__ points
+    # into the temp _MEI bundle dir, so locate the data dir explicitly.
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        exe_dir = Path(sys.executable).resolve().parent
+        internal = exe_dir / "_internal"
+        if internal.is_dir():
+            return internal
+        return exe_dir
     return Path(__file__).resolve().parent
 
 
@@ -60,12 +65,23 @@ def check_updates():
         print(f"[launcher] update check failed: {e}")
 
 
+def serve_api():
+    """Entry point used when frozen: `sys.executable` is the .exe itself, so
+    `python -m uvicorn` is not an option -- run uvicorn in-process instead."""
+    import uvicorn
+    uvicorn.run("api.main:app", host="127.0.0.1", port=8000, log_level="warning")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check-updates", action="store_true")
     ap.add_argument("--native-fallback", action="store_true",
                     help="skip docker, expect API started externally")
+    ap.add_argument("--serve-api", action="store_true",
+                    help=argparse.SUPPRESS)  # internal: re-exec'd by the frozen exe
     args = ap.parse_args()
+    if args.serve_api:
+        return serve_api()
     if args.check_updates:
         return check_updates()
     ensure_config()
@@ -76,10 +92,13 @@ def main():
             compose_up()
         except Exception:
             # Docker not available — start the API ourselves (packaged exe / native fallback).
+            if getattr(sys, "frozen", False):
+                cmd = [sys.executable, "--serve-api"]
+            else:
+                cmd = [sys.executable, "-m", "uvicorn", "api.main:app",
+                       "--host", "127.0.0.1", "--port", "8000"]
             api_proc = subprocess.Popen(
-                [sys.executable, "-m", "uvicorn", "api.main:app",
-                 "--host", "127.0.0.1", "--port", "8000"],
-                cwd=str(ROOT),
+                cmd, cwd=str(ROOT),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(3)
     if not wait_ready():
@@ -87,8 +106,11 @@ def main():
         if api_proc:
             api_proc.terminate()
         return 1
-    print(f"[launcher] opening {DASH_URL} in your default browser.")
-    webbrowser.open(DASH_URL)
+    # Frozen builds have no Vite dev server: the API mounts dashboard/dist and
+    # serves it itself, so point the browser at the API's own port.
+    url = "http://127.0.0.1:8000" if getattr(sys, "frozen", False) else DASH_URL
+    print(f"[launcher] opening {url} in your default browser.")
+    webbrowser.open(url)
     print("[launcher] running -- close this window or use the dashboard power button to stop.")
     try:
         while True:
