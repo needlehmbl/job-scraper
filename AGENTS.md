@@ -40,10 +40,12 @@ Every push to `main` releases automatically, via
 GitHub once it has landed on `main` at least once, so the first
 `dev` -> `main` merge is also the first auto-release:
 
-1. `auto-release` reads the newest tag, bumps it, and pushes an annotated tag
-   at the `main` HEAD. Patch by default; a `major:` or `minor:` prefix on the
-   HEAD commit subject bumps that level instead. It sets a committer identity
-   first -- `actions/checkout` does not provide one, and `git tag -a` needs it.
+1. `auto-release` first runs `pytest tests/` in a `test` job; the tag step
+   `needs` it, so a failing test publishes nothing. Then it reads the newest
+   tag, bumps it, and pushes an annotated tag at the `main` HEAD. Patch by
+   default; a `major:` or `minor:` prefix on the HEAD commit subject bumps that
+   level instead. It sets a committer identity first -- `actions/checkout` does
+   not provide one, and `git tag -a` needs it.
 2. It then dispatches `release.yml` (`workflow_dispatch`, input `tag`) with that
    tag. The dispatch is not optional: a ref pushed with `GITHUB_TOKEN` does not
    trigger other workflows, so the tag push alone never starts `release.yml`.
@@ -69,7 +71,42 @@ Consequences worth remembering before merging:
   commit.
 
 Manual tagging still works if a release is ever needed without a merge:
-`git tag vX.Y.Z && git push origin vX.Y.Z`.
+`git tag vX.Y.Z && git push origin vX.Y.Z`. That path skips the `test` gate.
+
+## Tests
+
+`pytest tests/` (needs `pip install -r requirements.txt -r requirements-dev.txt`).
+`auto-release.yml` runs it in a `test` job that the `tag` job `needs`, so a red
+test means no release. Run it before merging `dev` -> `main`.
+
+## The frozen (Windows) build
+
+`installer/JobScraper.spec` freezes `launcher.py`, which serves the app with
+`uvicorn.run("api.main:app")`. Two things that are invisible to static analysis
+and have to be maintained by hand:
+
+- `api.main` is a hidden import. Nothing imports it statically, so without it
+  the exe dies with `ModuleNotFoundError: No module named 'api'`.
+- `tls_client` needs `collect_all`, because jobspy -> curl_cffi loads
+  `tls_client/dependencies/*.so|dll|dylib` through ctypes at import time.
+- The dashboard `Mount("/")` in `api/main.py` must stay the last route
+  registered. Starlette matches in order, and a mount at `/` swallows
+  everything after it -- that is how `/health` became a 404 in the packaged
+  app, and the launcher then waited 60s and quit. `tests/test_frozen_routes.py`
+  guards the order.
+
+Do not trust the spec by reading it. PyInstaller builds on Linux, so the whole
+graph can be checked before merging:
+
+```bash
+./venv/bin/pip install pyinstaller && ./venv/bin/python -m playwright install chromium
+./venv/bin/python -m PyInstaller --noconfirm --distpath /tmp/pyi/dist --workpath /tmp/pyi/build installer/JobScraper.spec
+cd /tmp/pyi/dist/JobScraper && ./JobScraper --serve-api   # needs 127.0.0.1:8000 free
+```
+
+Then curl `/health`, `/updates/check`, `/jobs` and `/` against it. Anything that
+raises here raises on Windows too. (Stop `job-dashboard-api.service` first --
+it holds port 8000 and has `Restart=always`.)
 
 ## Package manager
 

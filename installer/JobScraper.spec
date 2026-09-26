@@ -1,12 +1,27 @@
 # -*- mode: python -*-
+from PyInstaller.utils.hooks import collect_all
+
 block_cipher = None
+
+# jobspy scrapes with curl_cffi, which loads a prebuilt shared library out of
+# tls_client/dependencies/ with ctypes. PyInstaller's walk finds the Python
+# package but not that .so/.dll/.dylib, so the frozen exe died in
+# tls_client/cffi.py with "Failed to load dynlib/dll". collect_all ships the
+# binaries for every platform, which is what a cross-built spec needs.
+tls_datas, tls_binaries, tls_hidden = collect_all("tls_client")
+
 a = Analysis(
     ["../launcher.py"],
     pathex=[".."],
-    binaries=[],
+    binaries=tls_binaries,
     datas=[("../dashboard/dist", "dashboard/dist"), ("../config.yaml", "."),
-           ("../schema.sql", "."), ("../setup_wizard.py", ".")],
-    hiddenimports=["uvicorn", "fastapi", "playwright"],
+           ("../schema.sql", "."), ("../setup_wizard.py", ".")] + tls_datas,
+    # launcher.py starts the API with uvicorn.run("api.main:app"), an import
+    # string, so PyInstaller's static walk never sees the app and the frozen
+    # exe dies with "No module named 'api'". Listing api.main as a hidden
+    # import anchors the graph: everything api.main imports (api.routes.*,
+    # api.db, db, pipeline, tailor, resumes, render_resume) comes along.
+    hiddenimports=["api.main", "uvicorn", "fastapi", "playwright"] + tls_hidden,
     excludes=[],
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)

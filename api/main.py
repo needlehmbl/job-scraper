@@ -50,8 +50,19 @@ app.include_router(export.router, tags=["export"])
 app.include_router(tailor.router, tags=["tailor"])
 app.include_router(admin.router, tags=["admin"])
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 # Serve dashboard static files in packaged mode (frozen by PyInstaller).
 # ONEDIR builds put bundled data in an "_internal" subfolder next to the exe.
+#
+# This must stay LAST: Starlette matches routes in registration order and a
+# Mount at "/" matches every path, so anything registered after it is
+# unreachable. Registering this block before /health made the packaged app
+# answer 404 on /health -- the endpoint launcher.py polls -- so the exe waited
+# 60s and quit with "API did not become ready" while the API was serving fine.
 if getattr(sys, "frozen", False):
     _exe_dir = Path(sys.executable).resolve().parent
     _internal = _exe_dir / "_internal"
@@ -61,8 +72,3 @@ if getattr(sys, "frozen", False):
         app.mount("/", StaticFiles(directory=dashboard_dist, html=True), name="dashboard")
     else:
         print(f"[api] WARNING: dashboard/dist not found at {dashboard_dist}")
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
