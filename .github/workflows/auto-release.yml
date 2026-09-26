@@ -1,0 +1,78 @@
+name: auto-release
+# Every push to main is a release: bump the version off the newest tag and
+# push the tag, which trips release.yml (on: push: tags: v*) to build and
+# publish. Manual `git tag vX.Y.Z && git push origin vX.Y.Z` still works.
+#
+# The rule is: do work on dev, merge dev -> main only when you want users to
+# get it. A push to dev runs nothing.
+on:
+  push:
+    branches: [main]
+
+# Two pushes racing on the same version must not double-tag.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the version comes from the newest reachable tag.
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+
+      - name: Compute the next version
+        id: version
+        run: |
+          set -euo pipefail
+          latest=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest tag: $latest"
+
+          # Drop the leading v and any -prerelease suffix; we always bump from
+          # the released core version.
+          base=${latest#v}
+          core=${base%%-*}
+          IFS=. read -r maj min pat <<<"$core"
+
+          # A "major:"/"Minor:" prefix on the HEAD subject overrides the
+          # default patch bump. Everything else is a patch.
+          subject=$(git log -1 --pretty=%s)
+          level=patch
+          case "$subject" in
+            major:* | Major:*) level=major ;;
+            minor:* | Minor:*) level=minor ;;
+          esac
+          echo "HEAD subject: $subject -> $level bump"
+
+          case $level in
+            major) next="$((maj + 1)).0.0" ;;
+            minor) next="$maj.$((min + 1)).0" ;;
+            *) next="$maj.$min.$((pat + 1))" ;;
+          esac
+          echo "next=v$next" >>"$GITHUB_OUTPUT"
+
+      - name: Skip if that version already exists
+        id: check
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.next }}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "tag $tag already exists -- nothing to do"
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "will create $tag"
+            echo "exists=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Tag and push
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.next }}"
+          git tag -a "$tag" -m "$(git log -1 --pretty=%B)"
+          git push origin "$tag"
+          echo "pushed $tag -- release.yml will build and publish it"

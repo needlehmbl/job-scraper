@@ -7,9 +7,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: {node-version: 20}
-      - run: cd dashboard && npm ci && npm run build
+      - uses: oven-sh/setup-bun@v2
+        with: {bun-version: "1.4.2"}
+      - run: cd dashboard && bun install --frozen-lockfile && bun run build
       - run: >
           tar -czf jobscraper-linux.tar.gz docker-compose.yml Dockerfile
           .dockerignore run.sh stop.sh setup.sh setup_wizard.py launcher.py
@@ -26,9 +26,9 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: {node-version: 20}
-      - run: cd dashboard && npm ci && npm run build
+      - uses: oven-sh/setup-bun@v2
+        with: {bun-version: "1.4.2"}
+      - run: cd dashboard && bun install --frozen-lockfile && bun run build
       - run: >
           tar -czf jobscraper-macos.tar.gz docker-compose.yml Dockerfile
           .dockerignore run.sh stop.sh setup-mac.sh JobScraper.command
@@ -45,9 +45,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - uses: actions/setup-node@v4
-        with: {node-version: 20}
-      - run: cd dashboard; npm ci; npm run build
+      - uses: oven-sh/setup-bun@v2
+        with: {bun-version: "1.4.2"}
+      - run: cd dashboard; bun install --frozen-lockfile; bun run build
       - run: pip install -r requirements.txt pyinstaller
       - run: python -m playwright install chromium
       - run: pyinstaller --noconfirm installer/JobScraper.spec
@@ -112,5 +112,10 @@ jobs:
             xargs -r sha256sum > sha256sums.txt
           cat sha256sums.txt
           test -s sha256sums.txt || { echo "::error::no assets found to checksum"; exit 1; }
+      # generate_release_notes fills the body from every commit (and PR) since
+      # the previous release, so the changelog comes from the commit messages
+      # on dev that the merge carried in.
       - uses: softprops/action-gh-release@v2
-        with: {files: "assets/*"}
+        with:
+          files: "assets/*"
+          generate_release_notes: true
