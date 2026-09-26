@@ -81,12 +81,21 @@ jobs:
           if (-not $exe) { throw "No JobScraper-Setup-*.exe produced -- the installer step did not run." }
           if (-not $zip) { throw "jobscraper-win64.zip was not created." }
           if ($zip.Length -lt 1MB) { throw "jobscraper-win64.zip is only $($zip.Length) bytes -- zipping failed." }
+      # Collect both Windows artifacts into one flat directory. Uploading the
+      # exe from installer/Output/ made download-artifact preserve that nested
+      # path, so the publish job's `sha256sum *` hit a directory and failed.
+      - name: Stage Windows artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Get-ChildItem -Path installer\Output -Filter 'JobScraper-Setup-*.exe' -Recurse |
+            ForEach-Object { Copy-Item $_.FullName out\ }
+          Copy-Item jobscraper-win64.zip out\
+          Get-ChildItem out | ForEach-Object { "staged: $($_.Name) ($([math]::Round($_.Length/1MB,1)) MB)" }
       - uses: actions/upload-artifact@v4
         with:
           name: windows-assets
-          path: |
-            installer/Output/JobScraper-Setup-*.exe
-            jobscraper-win64.zip
+          path: out/
           if-no-files-found: error
   publish:
     needs: [linux, macos, windows]
@@ -96,6 +105,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: {path: assets, merge-multiple: true}
-      - run: cd assets && sha256sum * > sha256sums.txt
+      - name: Checksums
+        run: |
+          cd assets
+          find . -maxdepth 1 -type f ! -name 'sha256sums.txt' -printf '%f\n' | sort |
+            xargs -r sha256sum > sha256sums.txt
+          cat sha256sums.txt
+          test -s sha256sums.txt || { echo "::error::no assets found to checksum"; exit 1; }
       - uses: softprops/action-gh-release@v2
         with: {files: "assets/*"}
