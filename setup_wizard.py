@@ -244,8 +244,10 @@ def ensure_deps_cli(install_dir, say=None, confirm_retry=None, ask_text=None):
     confirm_retry = confirm_retry or _cli_retry
     ask_text = ask_text or (lambda prompt: input(prompt))
     say("\n--- Dependencies: getting the database and browser ready ---")
+    using_docker = False
     try:
         subprocess.run(["docker", "info"], capture_output=True, check=True)
+        using_docker = True
         say("Docker found -- starting the database...")
         subprocess.run(["docker", "compose", "up", "-d", "db"], cwd=str(install_dir), check=True)
         say("Waiting for the database to be ready...")
@@ -255,13 +257,31 @@ def ensure_deps_cli(install_dir, say=None, confirm_retry=None, ask_text=None):
                 break
             import time
             time.sleep(2)
+    except Exception:
+        using_docker = False
+
+    if using_docker:
+        # Kept outside the try above on purpose: a schema failure is not a
+        # "Docker is missing" problem and must not fall through to the
+        # native-Postgres instructions below.
         schema = install_dir / "schema.sql"
         if schema.exists():
-            subprocess.run(["docker", "compose", "exec", "-T", "db",
-                            "psql", "-U", "postgres", "-d", "job_scraper",
-                            "-f", "/schema.sql"], cwd=str(install_dir), check=False)
+            # The db service only mounts the pgdata volume, so /schema.sql
+            # does not exist inside the container -- pipe the file in instead.
+            # Must also use POSTGRES_USER from docker-compose.yml
+            # (jobscraper): the container has no "postgres" role. check=False
+            # would hide either failure and claim the database is ready.
+            with open(schema, "r", encoding="utf-8") as fh:
+                r = subprocess.run(["docker", "compose", "exec", "-T", "db",
+                                    "psql", "-v", "ON_ERROR_STOP=1",
+                                    "-U", "jobscraper", "-d", "job_scraper"],
+                                   cwd=str(install_dir), stdin=fh,
+                                   capture_output=True, text=True)
+            if r.returncode != 0:
+                say(f"Could not create the database tables: {(r.stderr or '').strip()[:300]}")
+                return confirm_retry("Something didn't finish. Retry?")
         say("Database is ready.")
-    except Exception:
+    else:
         if os.name == "nt":
             say("No Docker -- installing Postgres via winget...")
             try:

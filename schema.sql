@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   offer_salary TEXT NOT NULL DEFAULT '',   -- offer details (Applications tab)
   offer_benefits TEXT NOT NULL DEFAULT '',
   offer_pros TEXT NOT NULL DEFAULT '',
-  offer_cons TEXT NOT NULL DEFAULT '',
+  offer_cons TEXT NOT NULL DEFAULT ''
 );
 
 -- Stage-change audit trail for pipeline rows (mirrors job_status_history,

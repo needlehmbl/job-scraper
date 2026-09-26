@@ -92,7 +92,7 @@ def _relative_hours(text: str) -> float:
 class JobStreetScraper:
     """Context manager wrapping a single headless Chromium for many searches."""
 
-    def __init__(self, headless: bool = True, timeout_ms: int = 60000, storage_state: str | pathlib.Path | None = None):
+    def __init__(self, headless: bool = True, timeout_ms: int = 60000, storage_state: str | _pathlib.Path | None = None):
         self.headless = headless
         self.timeout_ms = timeout_ms
         # None = auto-detect DEFAULT_STORAGE_STATE if it exists; False/"" = force anonymous
