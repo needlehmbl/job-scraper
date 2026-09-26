@@ -72,6 +72,11 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         run: |
           set -euo pipefail
+          # An annotated tag needs a committer identity, and actions/checkout
+          # does not set one -- without this the step dies with
+          # "Committer identity unknown" / "empty ident name".
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           tag="${{ steps.version.outputs.next }}"
           git tag -a "$tag" -m "$(git log -1 --pretty=%B)"
           git push origin "$tag"
