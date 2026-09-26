@@ -5,7 +5,8 @@ name: auto-release
 # `git tag vX.Y.Z && git push origin vX.Y.Z` still works and builds normally.
 #
 # The rule is: do work on dev, merge dev -> main only when you want users to
-# get it. A push to dev runs nothing.
+# get it. A push to dev runs nothing. The pytest suite gates the tag, so a red
+# test means no release.
 on:
   push:
     branches: [main]
@@ -21,7 +22,22 @@ permissions:
   actions: write
 
 jobs:
+  # Gate every release on the test suite: a failing test must not produce a tag,
+  # because the tag is what triggers the published build for everyone else.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # 3.12 is the version the Docker image and the Windows build use.
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest tests/ -q
+
   tag:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       # Full history: the version comes from the newest reachable tag.
