@@ -47,7 +47,8 @@ jobs:
       - run: pyinstaller --noconfirm installer/JobScraper.spec
         env: {APP_VERSION: "${{ github.ref_name }}"}
       - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
-      - run: iscc installer/jobscraper.iss
+        with:
+          path: installer/jobscraper.iss
         env: {APP_VERSION: "${{ github.ref_name }}"}
       - run: Compress-Archive -Path dist/JobScraper -DestinationPath jobscraper-win64.zip
       - uses: actions/upload-artifact@v4
