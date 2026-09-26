@@ -131,8 +131,8 @@ source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium            # JobStreet scraping + apply_helper.py
 
-# Dashboard deps
-cd dashboard && npm install && cd ..
+# Dashboard deps (bun is the package manager -- see AGENTS.md)
+cd dashboard && bun install && cd ..
 ```
 
 `db.py` connects over the local socket as your OS user (peer auth); override
@@ -209,7 +209,7 @@ Or run the pieces by hand if you'd rather not use systemd:
 
 ```bash
 venv/bin/python main.py                # scrape into Postgres
-systemctl --user start job-dashboard-api job-dashboard-web   # or uvicorn / npm run dev directly
+systemctl --user start job-dashboard-api job-dashboard-web   # or uvicorn / bun run dev directly
 ```
 
 `run_and_open.sh` is open-only: it ensures the API/dashboard servers are up (it starts the

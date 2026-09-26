@@ -43,11 +43,16 @@ if ! curl -sf "$DASH_URL" >/dev/null 2>&1; then
     echo "[run_and_open] starting dashboard (systemd: job-dashboard-web) -> $DASH_URL"
     if systemctl --user start job-dashboard-web.service 2>/dev/null; then
         : # managed by systemd now
+    elif command -v bun >/dev/null 2>&1; then
+        # bun is the package manager here (see AGENTS.md). The dev server
+        # itself still runs under node -- `bun run dev` execs node_modules/.bin/vite.
+        echo "[run_and_open] systemd unavailable -- falling back to nohup vite (bun)"
+        (cd dashboard && nohup bun run dev > "../$DASH_LOG" 2>&1 &)
     elif command -v npm >/dev/null 2>&1; then
-        echo "[run_and_open] systemd unavailable -- falling back to nohup vite"
+        echo "[run_and_open] systemd unavailable -- falling back to nohup vite (npm)"
         (cd dashboard && nohup npm run dev > "../$DASH_LOG" 2>&1 &)
     else
-        echo "WARNING: npm not found; can't start the dashboard." >&2
+        echo "WARNING: neither bun nor npm found; can't start the dashboard." >&2
     fi
 fi
 
