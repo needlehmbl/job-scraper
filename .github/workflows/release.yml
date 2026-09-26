@@ -2,11 +2,21 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # auto-release.yml cannot rely on the tag push to start this workflow: a ref
+  # pushed with GITHUB_TOKEN does not trigger other workflows. So it dispatches
+  # this workflow by hand instead, passing the tag it just created.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish, e.g. v0.2.3"
+        required: true
+        type: string
 jobs:
   linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.tag || github.ref }}"}
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: "1.4.2"}
       - run: cd dashboard && bun install --frozen-lockfile && bun run build
@@ -26,6 +36,7 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.tag || github.ref }}"}
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: "1.4.2"}
       - run: cd dashboard && bun install --frozen-lockfile && bun run build
@@ -43,6 +54,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with: {ref: "${{ inputs.tag || github.ref }}"}
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
       - uses: oven-sh/setup-bun@v2
@@ -51,11 +63,11 @@ jobs:
       - run: pip install -r requirements.txt pyinstaller
       - run: python -m playwright install chromium
       - run: pyinstaller --noconfirm installer/JobScraper.spec
-        env: {APP_VERSION: "${{ github.ref_name }}"}
+        env: {APP_VERSION: "${{ inputs.tag || github.ref_name }}"}
       - uses: Minionguyjpro/Inno-Setup-Action@v1.2.2
         with:
           path: installer/jobscraper.iss
-        env: {APP_VERSION: "${{ github.ref_name }}"}
+        env: {APP_VERSION: "${{ inputs.tag || github.ref_name }}"}
       # Python's zipfile rather than Compress-Archive: the PyInstaller
       # onedir tree is deeply nested and large, and Compress-Archive has a
       # 2 GB per-file limit and is very slow on that shape.
@@ -118,4 +130,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: "assets/*"
+          # On a dispatch, github.ref is the branch, not the tag, so the tag
+          # has to be named explicitly.
+          tag_name: "${{ inputs.tag || github.ref_name }}"
           generate_release_notes: true

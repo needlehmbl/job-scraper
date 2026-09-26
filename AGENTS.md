@@ -42,11 +42,15 @@ GitHub once it has landed on `main` at least once, so the first
 
 1. `auto-release` reads the newest tag, bumps it, and pushes an annotated tag
    at the `main` HEAD. Patch by default; a `major:` or `minor:` prefix on the
-   HEAD commit subject bumps that level instead.
-2. The tag push trips `release.yml` (`on: push: tags: v*`), which builds the
-   Linux tarball, the macOS tarball, and the Windows installer + portable zip
-   with checksums, and publishes them as a GitHub Release.
-3. The release body is generated from every commit since the previous release,
+   HEAD commit subject bumps that level instead. It sets a committer identity
+   first -- `actions/checkout` does not provide one, and `git tag -a` needs it.
+2. It then dispatches `release.yml` (`workflow_dispatch`, input `tag`) with that
+   tag. The dispatch is not optional: a ref pushed with `GITHUB_TOKEN` does not
+   trigger other workflows, so the tag push alone never starts `release.yml`.
+3. `release.yml` builds the Linux tarball, the macOS tarball, and the Windows
+   installer + portable zip with checksums, and publishes them as a GitHub
+   Release. Manual tag pushes (`on: push: tags: v*`) still work the same way.
+4. The release body is generated from every commit since the previous release,
    so the commit messages written on `dev` become the changelog.
 
 Consequences worth remembering before merging:

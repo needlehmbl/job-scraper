@@ -1,7 +1,8 @@
 name: auto-release
-# Every push to main is a release: bump the version off the newest tag and
-# push the tag, which trips release.yml (on: push: tags: v*) to build and
-# publish. Manual `git tag vX.Y.Z && git push origin vX.Y.Z` still works.
+# Every push to main is a release: bump the version off the newest tag, push
+# the tag, then dispatch release.yml with that tag (a GITHUB_TOKEN push cannot
+# trigger a workflow, so the tag push alone is not enough). Manual
+# `git tag vX.Y.Z && git push origin vX.Y.Z` still works and builds normally.
 #
 # The rule is: do work on dev, merge dev -> main only when you want users to
 # get it. A push to dev runs nothing.
@@ -16,6 +17,8 @@ concurrency:
 
 permissions:
   contents: write
+  # needed to dispatch release.yml with gh workflow run
+  actions: write
 
 jobs:
   tag:
@@ -80,4 +83,16 @@ jobs:
           tag="${{ steps.version.outputs.next }}"
           git tag -a "$tag" -m "$(git log -1 --pretty=%B)"
           git push origin "$tag"
-          echo "pushed $tag -- release.yml will build and publish it"
+          echo "pushed $tag -- now dispatching release.yml"
+
+      # A ref pushed with GITHUB_TOKEN does not trigger workflows, so the tag
+      # push above cannot start release.yml by itself. Dispatch it explicitly,
+      # pointing at the tag we just created.
+      - name: Trigger the release build
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.next }}"
+          gh workflow run release.yml --ref main -f "tag=$tag"
+          echo "dispatched release.yml for $tag"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
