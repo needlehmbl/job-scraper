@@ -20,11 +20,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: "1.4.2"}
       - run: cd dashboard && bun install --frozen-lockfile && bun run build
-      - run: >
-          tar -czf jobscraper-linux.tar.gz docker-compose.yml Dockerfile
-          .dockerignore run.sh stop.sh setup.sh setup_wizard.py launcher.py
-          JobScraper.desktop schema.sql config.yaml .env.example
-          dashboard/dist README.md
+      - run: ./installer/make-tarball.sh jobscraper-linux.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: linux-tarball
@@ -40,11 +36,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: {bun-version: "1.4.2"}
       - run: cd dashboard && bun install --frozen-lockfile && bun run build
-      - run: >
-          tar -czf jobscraper-macos.tar.gz docker-compose.yml Dockerfile
-          .dockerignore run.sh stop.sh setup-mac.sh JobScraper.command
-          setup_wizard.py launcher.py schema.sql config.yaml .env.example
-          dashboard/dist README.md
+      - run: ./installer/make-tarball.sh jobscraper-macos.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: macos-tarball

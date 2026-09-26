@@ -50,6 +50,13 @@ GitHub once it has landed on `main` at least once, so the first
 3. `release.yml` builds the Linux tarball, the macOS tarball, and the Windows
    installer + portable zip with checksums, and publishes them as a GitHub
    Release. Manual tag pushes (`on: push: tags: v*`) still work the same way.
+   The Linux and macOS tarballs are built by `installer/make-tarball.sh`, which
+   derives the file list from `git ls-files` and then fails the build if any
+   path the shipped `Dockerfile` needs is missing from the archive. Do not
+   hand-edit a tarball file list -- add build-time, docs, or dev-only trees to
+   the exclude list in that script instead. New runtime files ship by default,
+   which is the point: a hand-written list once shipped a release with no
+   `api/` and no `requirements.txt`, so `docker compose build` could not work.
 4. The release body is generated from every commit since the previous release,
    so the commit messages written on `dev` become the changelog.
 
