@@ -17,6 +17,22 @@ jobs:
           dashboard/dist README.md
       - uses: actions/upload-artifact@v4
         with: {name: linux-tarball, path: jobscraper-linux.tar.gz}
+  macos:
+    # The tarball is pure .py/.sh/JS, so one build serves Intel and Apple
+    # Silicon alike -- the runner's own architecture does not matter.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - run: cd dashboard && npm ci && npm run build
+      - run: >
+          tar -czf jobscraper-macos.tar.gz docker-compose.yml Dockerfile
+          .dockerignore run.sh stop.sh setup-mac.sh JobScraper.command
+          setup_wizard.py launcher.py schema.sql config.yaml .env.example
+          dashboard/dist README.md
+      - uses: actions/upload-artifact@v4
+        with: {name: macos-tarball, path: jobscraper-macos.tar.gz}
   windows:
     runs-on: windows-latest
     steps:
@@ -37,7 +53,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: {name: windows-assets, path: "JobScraper-Setup-*.exe, jobscraper-win64.zip"}
   publish:
-    needs: [linux, windows]
+    needs: [linux, macos, windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

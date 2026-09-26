@@ -21,14 +21,18 @@ API_HEALTH = "http://127.0.0.1:8000/health"
 DASH_URL = "http://localhost:5173"
 
 
+def api_alive():
+    try:
+        with urllib.request.urlopen(API_HEALTH, timeout=2) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
 def wait_ready(timeout=60):
     for _ in range(timeout):
-        try:
-            with urllib.request.urlopen(API_HEALTH, timeout=2) as r:
-                if r.status == 200:
-                    return True
-        except Exception:
-            pass
+        if api_alive():
+            return True
         time.sleep(1)
     return False
 
@@ -47,7 +51,7 @@ def check_updates():
     import json
     try:
         req = urllib.request.Request(
-            "https://api.github.com/repos/needlehmbl/job-auto-apply/releases/latest",
+            "https://api.github.com/repos/needlehmbl/job-scraper/releases/latest",
             headers={"User-Agent": "jobscraper-launcher"})
         with urllib.request.urlopen(req, timeout=10) as r:
             latest = json.load(r)["tag_name"]
@@ -88,7 +92,12 @@ def main():
     print("[launcher] running -- close this window or use the dashboard power button to stop.")
     try:
         while True:
-            time.sleep(3600)
+            time.sleep(5)
+            if not api_alive():
+                # The dashboard power button (POST /shutdown) stops the API, so
+                # this is how the launcher learns it should exit.
+                print("[launcher] API stopped -- shutting down.")
+                break
     except KeyboardInterrupt:
         pass
     finally:

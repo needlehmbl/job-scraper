@@ -29,8 +29,8 @@ to postings from a browser tab.
 
 **Quick links** — grab the latest release from the
 [Releases page](https://github.com/needlehmbl/job-scraper/releases) — each release ships
-`JobScraper-Setup-v*.exe`, `jobscraper-win64.zip`, `jobscraper-linux.tar.gz`,
-and `sha256sums.txt`.
+`JobScraper-Setup-v*.exe`, `jobscraper-win64.zip`, `jobscraper-macos.tar.gz`,
+`jobscraper-linux.tar.gz`, and `sha256sums.txt`.
 
 | | Installer (recommended) | Portable zip |
 |---|---|---|
@@ -39,13 +39,51 @@ and `sha256sums.txt`.
 | Needs | Nothing extra — Python, the browser driver, and the dashboard are bundled | Nothing extra — same bundle, no install step |
 | Best for | Most people | USB sticks / PCs where you can't install software |
 
-> **SmartScreen note:** the installer is unsigned, so Windows may show
-> "Windows protected your PC". Click **More info → Run anyway** — that
-> warning is expected for a small open-source project without a paid
-> signing certificate. The portable zip skips the installer entirely
-> (SmartScreen may still ask once about the `.exe` inside).
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| File | `JobScraper-Setup-v*.exe` or `jobscraper-win64.zip` | `jobscraper-macos.tar.gz` | `jobscraper-linux.tar.gz` |
+| Setup | Double-click the `.exe`, or extract the zip | Extract, then run `./setup-mac.sh` once | Extract, then run `./setup.sh` once |
+| Start | Desktop shortcut or `JobScraper.exe` | `JobScraper.command` in `~/Applications` | `./run.sh`, or the app menu icon |
+| Arch | Windows x64 | Intel **and** Apple Silicon (one file) | Linux x64 |
+| Needs | Nothing — bundled | Nothing — `setup-mac.sh` installs Homebrew, Python, and Postgres for you | Docker |
 
-### Linux (tarball):
+> **SmartScreen note (Windows):** the installer is unsigned, so Windows may
+> show "Windows protected your PC". Click **More info → Run anyway** — that
+> warning is expected for a small open-source project without a paid signing
+> certificate. The portable zip skips the installer entirely (SmartScreen
+> may still ask once about the `.exe` inside).
+>
+> **macOS note:** there's no `.app` installer, on purpose. A `.app` would be
+> blocked by Gatekeeper until you dig through System Settings to allow it;
+> these plain scripts aren't gated at all, so double-clicking
+> `JobScraper.command` just works.
+
+**macOS (Apple Silicon or Intel — one download for both):**
+
+```bash
+tar -xzf jobscraper-macos.tar.gz
+cd jobscraper-macos        # or wherever you extracted it
+./setup-mac.sh             # one-time: Python check, wizard, database, shortcut
+```
+
+`setup-mac.sh` installs everything the app needs, so there's nothing to
+install by hand first:
+
+1. **Homebrew** — the macOS package manager (only if you don't have it)
+2. **Python 3.12** — macOS ships an old 3.9, so this is nearly always needed
+3. **The Python packages** — into a local `venv/`
+4. **Postgres** — via Docker if you have it, otherwise `brew install postgresql@16`
+5. **A launcher** — a `JobScraper.command` file in your `~/Applications`
+
+It then asks the same wizard questions as the other platforms (search
+terms, location, boards, optional OpenRouter key). After that, just
+double-click **JobScraper** to start it — it opens in your default browser.
+Stop it with the power button in the dashboard header.
+
+Expect it to ask for your Mac password once: that's Homebrew's normal
+installer behaviour, not anything JobScraper is doing.
+
+**Linux (tarball):**
 
 ```bash
 tar -xzf jobscraper-linux.tar.gz
@@ -70,6 +108,9 @@ update:
   run it — it installs over the same folder and keeps your settings.
 - *Windows (portable):* extract the new `jobscraper-win64.zip` over the
   old folder (keep your `.env` and data files when asked).
+- *macOS:* extract the new `jobscraper-macos.tar.gz` over the old folder,
+  then re-run `./setup-mac.sh` — it keeps your config, database, and
+  `.env`.
 - *Linux:* `./setup.sh --upgrade jobscraper-linux.tar.gz` — installs the
   new files, keeps your config and database.
 

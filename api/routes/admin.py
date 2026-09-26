@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 router = APIRouter()
 
 VERSION = os.environ.get("JOBSCRAPER_VERSION", "dev")
-REPO = os.environ.get("JOBSCRAPER_REPO", "needlehmbl/job-auto-apply")
+REPO = os.environ.get("JOBSCRAPER_REPO", "needlehmbl/job-scraper")
 
 
 def _local_only(request: Request):

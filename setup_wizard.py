@@ -274,6 +274,28 @@ def ensure_deps_cli(install_dir, say=None, confirm_retry=None, ask_text=None):
             except Exception as e:
                 say(f"Postgres install failed ({e}). Try again or ask for help.")
                 return confirm_retry("Something didn't finish. Retry?")
+        elif sys.platform == "darwin":
+            say("No Docker here -- installing Postgres with Homebrew instead.")
+            say("(If you don't have Homebrew, install it from brew.sh first, then re-run.)")
+            try:
+                subprocess.run(["brew", "install", "postgresql@16"], check=True)
+                subprocess.run(["brew", "services", "start", "postgresql@16"], check=True)
+                # brew --prefix handles both /opt/homebrew (Apple Silicon)
+                # and /usr/local (Intel).
+                prefix = subprocess.run(["brew", "--prefix", "postgresql@16"],
+                                        capture_output=True, text=True, check=True)
+                bindir = str(Path(prefix.stdout.strip()) / "bin")
+                subprocess.run([bindir + "/createdb", "job_scraper"],
+                               check=False, cwd=str(install_dir))
+                subprocess.run([bindir + "/psql", "-d", "job_scraper",
+                                "-f", str(install_dir / "schema.sql")], check=False)
+                say("Postgres installed, started, and database created.")
+            except FileNotFoundError:
+                say("Homebrew isn't installed. Get it from https://brew.sh, then re-run.")
+                return confirm_retry("Something didn't finish. Retry?")
+            except Exception as e:
+                say(f"Postgres install failed ({e}). Try again or ask for help.")
+                return confirm_retry("Something didn't finish. Retry?")
         else:
             say("No Docker here, so this machine needs its own Postgres.")
             say("Follow the native-Postgres steps in README.md section 2 (Setup),")
@@ -571,6 +593,13 @@ def main(argv=None):
     if args.upgrade:
         return do_upgrade(args.upgrade, args.dir if args.dir != str(ROOT) else None)
     install_dir = Path(args.dir).expanduser()
+    if sys.version_info < (3, 12):
+        print("JobScraper needs Python 3.12 or newer.")
+        if sys.platform == "darwin":
+            print("macOS ships an old system Python -- install a current one first:")
+            print("  brew install python@3.12")
+            print("then run:  python3.12 setup_wizard.py")
+        return 1
     if tk is not None and (os.name == "nt" or os.environ.get("DISPLAY")):
         try:
             return run_gui(install_dir)
