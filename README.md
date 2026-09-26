@@ -25,52 +25,12 @@ to postings from a browser tab.
 - A **Download xlsx** button exports the Jobs + Filtered tabs as a styled
   offline spreadsheet (`GET /export/xlsx`).
 
-## Demo
+## Download / Install
 
-[![Job Scraper dashboard demo](demo/preview.gif)](demo/job-scraper-demo.mp4)
-
-Click the preview for the full video (`demo/job-scraper-demo.mp4`,
-~4 min, silent): dashboard triage, duplicate scan, Filtered review,
-resume tailoring, xlsx export, and a real scrape with a time-lapse
-through the long middle. Retake with
-`venv/bin/python demo/record-demo.py` (full take) and rebuild the cut
-with `demo/assemble.sh` — see the script headers.
-
-## 1. Architecture
-
-```
-venv/bin/python main.py          scrape -> Postgres (jobs, scrape_runs)
-pipeline.py                     shared scrape pipeline (CLI + API button use the same code)
-greenhouse.py / lever.py          direct company-board scrapers (public JSON APIs, no browser) — slugs in `company_boards`
-jobstreet.py / glassdoor.py       Playwright/Chromium scrapers (no jobspy provider / bot-walled API) — locations in `search.location` / `glassdoor_locations`
-filtered_jobs (Postgres)          postings the auto-filter held out, with per-row reason — reviewed in the dashboard's Filtered tab
-api/routes/filtered.py            GET /filtered, POST /filtered/{id}/restore, DELETE /filtered/{id}
-job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
-job-dashboard-web.service         systemd user unit: Vite + React + Tailwind dev server on :5173
-dashboard/                        Vite + React + Tailwind dev server on :5173
-run_and_open.sh                   ensure both servers, open the dashboard (open-only; scraping lives in the dashboard's Scrape button)
-stop.sh                           stop the API/dashboard + any leftover browser processes
-apply_helper.py                   opens a job URL in a real browser and prefills form fields
-notifier.py                       tails runs.log -> desktop notification (unchanged)
-extract_resume.py                 Harvard-style .docx parser -> structured resume bank YAML
-resumes.py / tailor.py / render_resume.py   resume library, per-posting LLM tailoring, .docx rendering
-```
-
-The API and dashboard run as **systemd user units**
-(`job-dashboard-api.service`, `job-dashboard-web.service`), so they start at
-login, survive tab reloads, and auto-restart if they crash. `git` this repo
-does not contain them; the unit files live in `~/.config/systemd/user/`.
-
-## 2. Setup
-
-### Easiest: download a release (no code needed)
-
-Grab the latest release from the
-[Releases page](https://github.com/needlehmbl/job-auto-apply/releases)
-— each release ships `JobScraper-Setup-v*.exe`, `jobscraper-win64.zip`,
-`jobscraper-linux.tar.gz`, and `sha256sums.txt`.
-
-**Windows — installer or portable, pick one:**
+**Quick links** — grab the latest release from the
+[Releases page](https://github.com/needlehmbl/job-scraper/releases) — each release ships
+`JobScraper-Setup-v*.exe`, `jobscraper-win64.zip`, `jobscraper-linux.tar.gz`,
+and `sha256sums.txt`.
 
 | | Installer (recommended) | Portable zip |
 |---|---|---|
@@ -85,7 +45,7 @@ Grab the latest release from the
 > signing certificate. The portable zip skips the installer entirely
 > (SmartScreen may still ask once about the `.exe` inside).
 
-**Linux (tarball):**
+### Linux (tarball):
 
 ```bash
 tar -xzf jobscraper-linux.tar.gz
@@ -93,13 +53,13 @@ cd jobscraper-linux          # or wherever you extracted it
 ./setup.sh                   # wizard + desktop shortcut + database (needs Docker)
 ```
 
-`setup.sh` runs the same beginner-friendly wizard as the Windows
-installer: search terms, location, and job boards (prefilled with sensible
-defaults), an optional free OpenRouter key for smarter filtering (with
-**Test** and **Skip** buttons — the scraper works fine without one), then
-it installs what's missing and prepares the database. It also adds a
-JobScraper icon to your app menu. Stuck? `./setup.sh --check` diagnoses
-your install and explains each missing piece in plain language.
+`setup.sh` runs the same beginner-friendly wizard: search terms, location,
+and job boards (prefilled with sensible defaults), an optional free
+OpenRouter key for smarter filtering (with **Test** and **Skip** buttons —
+the scraper works fine without one), then it installs what's missing and
+prepares the database. It also adds a JobScraper icon to your app menu.
+Stuck? `./setup.sh --check` diagnoses your install and explains each missing
+piece in plain language.
 
 ### Updating (keeps everything)
 
@@ -139,6 +99,42 @@ with the `DATABASE_URL` env var if you ever point it elsewhere.
 New columns (`score`, `last_seen`, `follow_up_at`, …) migrate
 automatically via `ensure_tracking_schema()` on the next scrape or API
 start — no manual `ALTER TABLE` needed.
+
+## Demo
+
+[![Job Scraper dashboard demo](demo/preview.gif)](demo/job-scraper-demo.mp4)
+
+Click the preview for the full video (`demo/job-scraper-demo.mp4`,
+~4 min, silent): dashboard triage, duplicate scan, Filtered review,
+resume tailoring, xlsx export, and a real scrape with a time-lapse
+through the long middle. Retake with
+`venv/bin/python demo/record-demo.py` (full take) and rebuild the cut
+with `demo/assemble.sh` — see the script headers.
+
+## 2. Architecture
+
+```
+venv/bin/python main.py          scrape -> Postgres (jobs, scrape_runs)
+pipeline.py                     shared scrape pipeline (CLI + API button use the same code)
+greenhouse.py / lever.py          direct company-board scrapers (public JSON APIs, no browser) — slugs in `company_boards`
+jobstreet.py / glassdoor.py       Playwright/Chromium scrapers (no jobspy provider / bot-walled API) — locations in `search.location` / `glassdoor_locations`
+filtered_jobs (Postgres)          postings the auto-filter held out, with per-row reason — reviewed in the dashboard's Filtered tab
+api/routes/filtered.py            GET /filtered, POST /filtered/{id}/restore, DELETE /filtered/{id}
+job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
+job-dashboard-web.service         systemd user unit: Vite + React + Tailwind dev server on :5173
+dashboard/                        Vite + React + Tailwind dev server on :5173
+run_and_open.sh                   ensure both servers, open the dashboard (open-only; scraping lives in the dashboard's Scrape button)
+stop.sh                           stop the API/dashboard + any leftover browser processes
+apply_helper.py                   opens a job URL in a real browser and prefills form fields
+notifier.py                       tails runs.log -> desktop notification (unchanged)
+extract_resume.py                 Harvard-style .docx parser -> structured resume bank YAML
+resumes.py / tailor.py / render_resume.py   resume library, per-posting LLM tailoring, .docx rendering
+```
+
+The API and dashboard run as **systemd user units**
+(`job-dashboard-api.service`, `job-dashboard-web.service`), so they start at
+login, survive tab reloads, and auto-restart if they crash. `git` this repo
+does not contain them; the unit files live in `~/.config/systemd/user/`.
 
 
 ## 3. Run it
