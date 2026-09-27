@@ -43,9 +43,10 @@ def restore_filtered(fid: int):
     rows = db.list_filtered_jobs(include_restored=True)
     for r in rows:
         if r["id"] == fid:
-            # job_id lets the dashboard reveal/highlight the restored row in
-            # the Jobs tab -- it has no other way to learn the new jobs id.
+            # job_id/job_status let the dashboard follow and undo the move:
+            # job_id is the new jobs row, job_status what it was before.
             r["job_id"] = job.get("id")
+            r["job_status"] = job.get("status")
             return r
     raise HTTPException(status_code=500, detail="restore succeeded but row vanished")
 

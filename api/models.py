@@ -91,8 +91,10 @@ class FilteredJob(BaseModel):
     filtered_at: datetime | None = None
     restored: bool = False
     # Only set by POST /filtered/{fid}/restore: the jobs row the posting was
-    # moved into, so the dashboard can reveal/highlight it.
+    # moved into (NEW when the restore created it, otherwise the status that
+    # row already had) so the dashboard can track and undo the move.
     job_id: int | None = None
+    job_status: str | None = None
 
 
 class FilteredReinsert(BaseModel):

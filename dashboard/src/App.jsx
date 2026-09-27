@@ -535,8 +535,9 @@ export default function App() {
   const [filterSource, setFilterSource] = useState('')
   const [filtPostedDir, setFiltPostedDir] = useState(null) // null | 'desc' | 'asc'
   const [filtFilteredDir, setFiltFilteredDir] = useState(null) // null | 'desc' | 'asc'
-  const [filteredNote, setFilteredNote] = useState('')
-  const [restoring, setRestoring] = useState(null)
+  // Filtered-review row whose confirm strip is open (Review was clicked).
+  const [reviewId, setReviewId] = useState(null)
+  const [reviewBusy, setReviewBusy] = useState(false)
   const [showDupes, setShowDupes] = useState(false)
   const [dupeScanActive, setDupeScanActive] = useState(false)
   const [keepers, setKeepers] = useState({})
@@ -1057,7 +1058,18 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ follow_up_at: a.prev }),
         })
-      } else if (a.kind === 'restore') {
+      } else if (a.kind === 'review-apply') {
+        // PATCH the status back *before* un-restoring: unrestore only drops the
+        // jobs row while it is still NEW, so a row this restore created goes
+        // away with it, while a row that was already tracked survives with the
+        // status it had before.
+        updateJobs(a.jobId, { status: a.prevStatus })
+        const pr = await fetch(`${API}/jobs/${a.jobId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: a.prevStatus }),
+        })
+        if (!pr.ok) throw new Error(`status revert failed (${pr.status})`)
         const r = await fetch(`${API}/filtered/${a.fid}/unrestore`, {
           method: 'POST',
         })
@@ -1069,8 +1081,8 @@ export default function App() {
         listHint = 'filtered'
         tabHint = 'filtered'
         setFilteredJobs((prev) => [row, ...prev.filter((f) => f.id !== row.id)])
-        // unrestore also drops the auto-created NEW triage row; /jobs is the
-        // only thing that needs re-syncing (stats catch up on the poll).
+        // unrestore may have dropped the triage row outright, so /jobs needs
+        // re-syncing (stats catch up on the poll).
         refreshJobs()
       } else if (a.kind === 'dismiss') {
         const r = await fetch(`${API}/filtered/reinsert`, {
@@ -1216,48 +1228,69 @@ export default function App() {
     [updateJobs, refreshJobs, fetchAll]
   )
 
-  const restoreFiltered = useCallback(
+  // Filtered review: open the posting and ask whether it went out. The answer
+  // decides the row's fate -- applied means restore it and track it in
+  // Applications, "not this one" dismisses it so the DB does not fill up with
+  // postings nobody wanted. Walking away changes nothing.
+  const reviewFiltered = useCallback((job) => {
+    setReviewId(job.id)
+    try {
+      window.open(job.url, '_blank')
+    } catch (e) {
+      console.error('review open failed:', e)
+    }
+  }, [])
+
+  const confirmReviewApply = useCallback(
     async (job) => {
-      setRestoring(job.id)
-      setFilteredNote('')
-      let restoredJobId = null
+      if (reviewBusy) return
+      setReviewBusy(true)
+      const title = job.title || 'Untitled'
       try {
         const r = await fetch(`${API}/filtered/${job.id}/restore`, {
           method: 'POST',
         })
         if (!r.ok) throw new Error(`restore failed (${r.status})`)
         const row = await r.json()
-        restoredJobId = row.job_id ?? null
-        recordAction({
-          kind: 'restore',
-          fid: job.id,
-          label: `Restored "${job.title || 'Untitled'}" to Jobs as NEW`,
+        if (!row.job_id) throw new Error('restore returned no job id')
+        // The restore put the posting in Jobs (NEW, unless the URL was already
+        // tracked) -- keep that status so undo can put it back.
+        const prevStatus = row.job_status || 'NEW'
+        const pr = await fetch(`${API}/jobs/${row.job_id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'APPLIED' }),
         })
-        setFilteredNote(
-          `Restored "${job.title || 'Untitled'}" to Jobs as NEW — mark it REVIEWED/APPLIED there so the learner adjusts.`
-        )
-        // Only the search is cleared, and only when it would hide the row we
-        // are about to reveal. Negative filters (status/source/date) stay.
-        if (search && !matchesSearch(row, parsedSearch)) setSearch('')
-        setTab('jobs')
+        if (!pr.ok) throw new Error(`mark applied failed (${pr.status})`)
+        recordAction({
+          kind: 'review-apply',
+          fid: job.id,
+          jobId: row.job_id,
+          prevStatus,
+          label: `Applied to "${title}" from Filtered review`,
+        })
+        setReviewId(null)
+        // No reveal on this path: the user is working through a queue and
+        // staying put is worth more than pointing at the new Applications row.
+        toast.success(`Applied to "${title}" — now tracked in Applications`)
       } catch (e) {
-        console.error('restore failed:', e)
-        setFilteredNote(`Restore failed: ${e.message}`)
+        console.error('review apply failed:', e)
+        toast.error(`Could not record the application: ${e.message}`)
       }
       await fetchAll()
-      // Same reveal + highlight the undo of a restore gets: switch to Jobs,
-      // page to the row, flash it.
-      if (restoredJobId) {
-        setRevealReq({ ids: [String(restoredJobId)], tab: 'jobs', list: 'jobs' })
-      }
-      setRestoring(null)
+      setReviewBusy(false)
     },
-    [fetchAll, recordAction, search, parsedSearch]
+    [reviewBusy, recordAction, fetchAll]
   )
 
   const deleteFiltered = useCallback(
-    async (job) => {
-      if (!window.confirm(`Dismiss "${job.title || 'Untitled'}" from review? (A future scrape can hold it again.)`))
+    async (job, opts = {}) => {
+      if (
+        !opts.skipConfirm &&
+        !window.confirm(
+          `Dismiss "${job.title || 'Untitled'}" from review? (A future scrape can hold it again.)`
+        )
+      )
         return
       const snapshot = {
         source: job.source || '',
@@ -1275,7 +1308,9 @@ export default function App() {
         recordAction({
           kind: 'dismiss',
           snapshot,
-          label: `Dismissed "${job.title || 'Untitled'}" from Filtered review`,
+          label:
+            opts.label ||
+            `Dismissed "${job.title || 'Untitled'}" from Filtered review`,
         })
       } catch (e) {
         console.error('filtered delete failed:', e)
@@ -1283,6 +1318,20 @@ export default function App() {
       await fetchAll()
     },
     [fetchAll, recordAction]
+  )
+
+  // Filtered review's "not this one": the strip is the confirmation, so no
+  // second window.confirm. Undo still brings the row back -- until the next
+  // action replaces it.
+  const dismissAfterReview = useCallback(
+    (job) => {
+      setReviewId(null)
+      return deleteFiltered(job, {
+        skipConfirm: true,
+        label: `Dismissed "${job.title || 'Untitled'}" after review — not applied`,
+      })
+    },
+    [deleteFiltered]
   )
 
   const markGroupDupe = useCallback(
@@ -2117,7 +2166,7 @@ function describeScrapeProgress(p) {
           </button>
           <button
             onClick={() => setTab('filtered')}
-            title="Postings the auto-filter held out — restore the good ones, dismiss the rest"
+            title="Postings the auto-filter held out — review the ones worth opening, dismiss the rest"
             className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
               tab === 'filtered'
                 ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
@@ -2139,8 +2188,8 @@ function describeScrapeProgress(p) {
           </button>
           {tab === 'filtered' && (
             <span className="text-sm text-neutral-500 dark:text-neutral-400">
-              Held out by the auto-filter — check the reason, restore what looks
-              good, dismiss the rest.
+              Held out by the auto-filter — check the reason, open what looks
+              worth applying to, dismiss the rest.
             </span>
           )}
         </section>
@@ -2684,11 +2733,6 @@ function describeScrapeProgress(p) {
 
         {tab === 'filtered' && (
         <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
-          {filteredNote && (
-            <p className="border-b border-neutral-200 px-4 py-2 text-sm text-neutral-600 dark:border-neutral-800 dark:text-neutral-400" role="status">
-              {filteredNote}
-            </p>
-          )}
           <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
             <select
               value={filterReason}
@@ -2710,6 +2754,16 @@ function describeScrapeProgress(p) {
                 <option key={src} value={src}>{src}</option>
               ))}
             </select>
+            <input
+              type="search"
+              placeholder='title/company: python backend, jr | junior, "exact phrase"'
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="min-w-52 flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+            />
+            <span className="text-sm text-neutral-500 dark:text-neutral-400">
+              {visibleFiltered.length} of {pendingFiltered.length}
+            </span>
           </div>
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
@@ -2754,7 +2808,8 @@ function describeScrapeProgress(p) {
               </thead>
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {filtPageRows.map((job) => (
-                  <tr key={job.id} data-row-id={`f${job.id}`} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                  <Fragment key={job.id}>
+                  <tr data-row-id={`f${job.id}`} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
                     <td className="px-4 py-3">
                       <a
                         href={job.url}
@@ -2815,16 +2870,16 @@ function describeScrapeProgress(p) {
                     <td className="sticky right-0 bg-white px-4 py-3 text-right shadow-[-8px_0_12px_-8px_rgba(0,0,0,0.15)] dark:bg-neutral-900">
                       <div className="flex justify-end gap-2">
                         <button
-                          onClick={() => restoreFiltered(job)}
-                          disabled={restoring === job.id}
-                          title="Move back to Jobs as NEW so you can apply"
-                          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                          onClick={() => reviewFiltered(job)}
+                          disabled={reviewId === job.id}
+                          title="Open the posting, then tell us whether you applied — applied moves it into Applications, not applied dismisses it"
+                          className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
                         >
-                          {restoring === job.id ? 'Restoring…' : 'Restore'}
+                          {reviewId === job.id ? 'Reviewing…' : 'Review'}
                         </button>
                         <button
                           onClick={() => deleteFiltered(job)}
-                          title="Dismiss — it was filtered correctly"
+                          title="Dismiss without opening it — it was filtered correctly"
                           className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
                         >
                           Dismiss
@@ -2832,6 +2887,40 @@ function describeScrapeProgress(p) {
                       </div>
                     </td>
                   </tr>
+                  {reviewId === job.id && (
+                    <tr className="bg-emerald-50 dark:bg-emerald-950/40">
+                      <td colSpan={7} className="px-4 py-2.5">
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-medium text-neutral-700 dark:text-neutral-200">
+                            Did you submit the application for “{job.title || 'Untitled'}”?
+                          </span>
+                          <button
+                            onClick={() => confirmReviewApply(job)}
+                            disabled={reviewBusy}
+                            title="Yes — restore it and track it in Applications"
+                            className="rounded-lg bg-emerald-600 px-3 py-1.5 font-medium text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                          >
+                            {reviewBusy ? 'Saving…' : 'Yes, applied ✓'}
+                          </button>
+                          <button
+                            onClick={() => dismissAfterReview(job)}
+                            title="No — dismiss it so the database does not fill up with postings you skipped"
+                            className="rounded-lg border border-neutral-300 px-2.5 py-1.5 font-medium text-neutral-600 hover:bg-neutral-100 dark:border-neutral-600 dark:text-neutral-300 dark:hover:bg-neutral-800"
+                          >
+                            Not this one
+                          </button>
+                          <button
+                            onClick={() => setReviewId(null)}
+                            title="Decide later (row stays in review)"
+                            className="ml-auto rounded px-2 py-1 text-neutral-400 hover:bg-neutral-200 dark:text-neutral-500 dark:hover:bg-neutral-800"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -2875,11 +2964,14 @@ function describeScrapeProgress(p) {
             </button>
             <input
               type="search"
-              placeholder="Filter applications…"
+              placeholder='title/company: python backend, jr | junior, "exact phrase"'
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="min-w-40 flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 text-sm dark:border-neutral-700 dark:bg-neutral-800"
             />
+            <span className="text-sm text-neutral-500 dark:text-neutral-400">
+              {applicationRows.length} of {appCounts.total}
+            </span>
           </div>
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
