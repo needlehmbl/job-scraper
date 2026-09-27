@@ -90,6 +90,9 @@ class FilteredJob(BaseModel):
     filter_reason: str = ""
     filtered_at: datetime | None = None
     restored: bool = False
+    # Only set by POST /filtered/{fid}/restore: the jobs row the posting was
+    # moved into, so the dashboard can reveal/highlight it.
+    job_id: int | None = None
 
 
 class FilteredReinsert(BaseModel):

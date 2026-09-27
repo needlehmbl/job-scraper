@@ -1220,11 +1220,14 @@ export default function App() {
     async (job) => {
       setRestoring(job.id)
       setFilteredNote('')
+      let restoredJobId = null
       try {
         const r = await fetch(`${API}/filtered/${job.id}/restore`, {
           method: 'POST',
         })
         if (!r.ok) throw new Error(`restore failed (${r.status})`)
+        const row = await r.json()
+        restoredJobId = row.job_id ?? null
         recordAction({
           kind: 'restore',
           fid: job.id,
@@ -1233,15 +1236,23 @@ export default function App() {
         setFilteredNote(
           `Restored "${job.title || 'Untitled'}" to Jobs as NEW — mark it REVIEWED/APPLIED there so the learner adjusts.`
         )
+        // Only the search is cleared, and only when it would hide the row we
+        // are about to reveal. Negative filters (status/source/date) stay.
+        if (search && !matchesSearch(row, parsedSearch)) setSearch('')
         setTab('jobs')
       } catch (e) {
         console.error('restore failed:', e)
         setFilteredNote(`Restore failed: ${e.message}`)
       }
       await fetchAll()
+      // Same reveal + highlight the undo of a restore gets: switch to Jobs,
+      // page to the row, flash it.
+      if (restoredJobId) {
+        setRevealReq({ ids: [String(restoredJobId)], tab: 'jobs', list: 'jobs' })
+      }
       setRestoring(null)
     },
-    [fetchAll, recordAction]
+    [fetchAll, recordAction, search, parsedSearch]
   )
 
   const deleteFiltered = useCallback(
