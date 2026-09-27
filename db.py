@@ -321,9 +321,17 @@ def save_filtered_jobs(rows: list[dict], conn=None) -> int:
 
     Rows already tracked in `jobs` (e.g. previously restored) are skipped.
     Rows without a URL are skipped (they can't be restored meaningfully).
+    Repeat reposts of already-judged listings (`repeat-seen:*` reasons) are
+    dropped silently -- re-reviewing them teaches nothing, so they never
+    reach the Filtered tab.
     A re-filtered URL refreshes its reason/time and re-appears
     (restored=FALSE). Returns the number of rows upserted.
     """
+    if not rows:
+        return 0
+    # Repeats are decided, not new information -- never hold them for review.
+    rows = [r for r in rows
+            if not (r.get("filter_reason") or "").strip().startswith("repeat-seen:")]
     if not rows:
         return 0
     own = conn is None

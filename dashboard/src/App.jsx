@@ -166,19 +166,47 @@ function Highlight({ text, query }) {
   )
 }
 
-function Pager({ page, total, onChange }) {
+function Pager({ page, total, onChange, position = 'bottom', anchorId }) {
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   if (pages <= 1) return null
   const btn = 'rounded-lg border border-neutral-300 px-3 py-1.5 text-sm font-medium text-neutral-600 hover:bg-neutral-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-neutral-700 dark:text-neutral-300 dark:hover:bg-neutral-800'
+  const go = (n) => {
+    const next = Math.min(pages, Math.max(1, Number.isFinite(n) ? Math.trunc(n) : page))
+    if (next === page) return
+    onChange(next)
+    // A bottom page-turn leaves the viewport at the table's foot -- jump
+    // back to its head. The top pager needs no scroll (already there).
+    if (position === 'bottom' && anchorId) {
+      requestAnimationFrame(() => {
+        document.getElementById(anchorId)?.scrollIntoView({ block: 'start' })
+      })
+    }
+  }
+  const edge = position === 'top' ? 'border-b' : 'border-t'
   return (
-    <div className="flex items-center justify-between gap-3 border-t border-neutral-200 px-4 py-2.5 text-sm text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-      <button className={btn} disabled={page <= 1} onClick={() => onChange(page - 1)}>
+    <div className={`flex items-center justify-between gap-3 ${edge} border-neutral-200 px-4 py-2.5 text-sm text-neutral-500 dark:border-neutral-800 dark:text-neutral-400`}>
+      <button className={btn} disabled={page <= 1} onClick={() => go(page - 1)}>
         ← Prev
       </button>
-      <span>
-        Page {page} of {pages} · {total} row{total === 1 ? '' : 's'}
+      <span className="flex items-center gap-1.5">
+        Page
+        <input
+          key={page}
+          type="number"
+          min={1}
+          max={pages}
+          defaultValue={page}
+          aria-label="Go to page"
+          title={`Go to page (1–${pages})`}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') go(Number(e.currentTarget.value))
+          }}
+          onBlur={(e) => go(Number(e.currentTarget.value))}
+          className="w-14 rounded-md border border-neutral-300 bg-white px-1.5 py-0.5 text-center text-sm text-neutral-700 [appearance:textfield] dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-200 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        of {pages} · {total} row{total === 1 ? '' : 's'}
       </span>
-      <button className={btn} disabled={page >= pages} onClick={() => onChange(page + 1)}>
+      <button className={btn} disabled={page >= pages} onClick={() => go(page + 1)}>
         Next →
       </button>
     </div>
@@ -512,6 +540,10 @@ export default function App() {
   const [selected, setSelected] = useState([])
   const [bulkStatus, setBulkStatus] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
+  // Filtered-review bulk dismiss: id-based like `selected` so it survives
+  // page turns and filter edits; pruned against the live list on refetch.
+  const [selectedFiltered, setSelectedFiltered] = useState([])
+  const [filtBulkBusy, setFiltBulkBusy] = useState(false)
   const [pendingApply, setPendingApply] = useState(null)
   const [confirmApplyId, setConfirmApplyId] = useState(null)
   const [scraping, setScraping] = useState(false)
@@ -608,6 +640,22 @@ export default function App() {
     []
   )
 
+  const toggleSelectFiltered = useCallback((id) => {
+    setSelectedFiltered((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }, [])
+
+  const toggleSelectAllFiltered = useCallback(
+    (rows) => {
+      const ids = rows.map((job) => job.id)
+      setSelectedFiltered((prev) => {
+        const allIn = ids.length > 0 && ids.every((id) => prev.includes(id))
+        if (allIn) return prev.filter((id) => !ids.includes(id))
+        return [...new Set([...prev, ...ids])]
+      })
+    },
+    []
+  )
+
   const fetchAll = useCallback(async () => {
     try {
       const [jobsRes, statsRes, runRes, resumesRes, filteredRes] = await Promise.all([
@@ -632,6 +680,9 @@ export default function App() {
       setFilteredJobs(Array.isArray(fj) ? fj : [])
       // Drop selections for rows that no longer exist.
       setSelected((prev) => prev.filter((id) => j.some((job) => job.id === id)))
+      setSelectedFiltered((prev) =>
+        prev.filter((id) => (Array.isArray(fj) ? fj : []).some((job) => job.id === id))
+      )
     } catch (e) {
       console.error('dashboard fetch failed:', e)
     } finally {
@@ -1096,6 +1147,26 @@ export default function App() {
         listHint = 'filtered'
         tabHint = 'filtered'
         setFilteredJobs((prev) => [row, ...prev.filter((f) => f.id !== row.id)])
+      } else if (a.kind === 'bulk-dismiss') {
+        // Bulk dismiss undo: re-insert every snapshot, most recent first so
+        // the tab order matches the single-dismiss path.
+        const rows = []
+        for (const snapshot of a.snapshots) {
+          const r = await fetch(`${API}/filtered/reinsert`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(snapshot),
+          })
+          if (!r.ok) throw new Error(`reinsert failed (${r.status})`)
+          rows.push(await r.json())
+        }
+        revealed = rows.map((row) => `f${row.id}`)
+        listHint = 'filtered'
+        tabHint = 'filtered'
+        setFilteredJobs((prev) => [
+          ...rows,
+          ...prev.filter((f) => !rows.some((row) => row.id === f.id)),
+        ])
       }
       setLastAction(null)
       setShowUndoConfirm(false)
@@ -1333,6 +1404,48 @@ export default function App() {
     },
     [deleteFiltered]
   )
+
+  // Bulk dismiss for Filtered review: one confirm for the whole batch, then
+  // parallel DELETEs. Undoable as the single most-recent action (re-inserts
+  // every snapshot) -- any later action replaces it, like single dismiss.
+  const bulkDismissFiltered = useCallback(async () => {
+    if (selectedFiltered.length === 0 || filtBulkBusy) return
+    const targets = filteredJobs.filter((j) => selectedFiltered.includes(j.id))
+    if (
+      !window.confirm(
+        `Dismiss ${targets.length} posting${targets.length === 1 ? '' : 's'} from review? (A future scrape can hold them again.)`
+      )
+    )
+      return
+    const snapshots = targets.map((job) => ({
+      source: job.source || '',
+      title: job.title || '',
+      company: job.company || '',
+      url: job.url || '',
+      location: job.location || null,
+      date_posted: job.date_posted || null,
+      description: job.description || null,
+      search_term: job.search_term || null,
+      filter_reason: job.filter_reason || '',
+    }))
+    setFiltBulkBusy(true)
+    try {
+      await Promise.all(
+        targets.map((job) => fetch(`${API}/filtered/${job.id}`, { method: 'DELETE' }))
+      )
+      recordAction({
+        kind: 'bulk-dismiss',
+        snapshots,
+        label: `Dismissed ${targets.length} posting${targets.length === 1 ? '' : 's'} from Filtered review`,
+      })
+      setSelectedFiltered([])
+      if (reviewId !== null && selectedFiltered.includes(reviewId)) setReviewId(null)
+    } catch (e) {
+      console.error('filtered bulk dismiss failed:', e)
+    }
+    await fetchAll()
+    setFiltBulkBusy(false)
+  }, [selectedFiltered, filtBulkBusy, filteredJobs, reviewId, fetchAll, recordAction])
 
   const markGroupDupe = useCallback(
     async (group) => {
@@ -2528,7 +2641,7 @@ function describeScrapeProgress(p) {
         )}
 
         {tab === 'jobs' && (
-        <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <section id="jobs-table" className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               Loading jobs…
@@ -2539,6 +2652,7 @@ function describeScrapeProgress(p) {
             </div>
           ) : (
             <>
+            <Pager position="top" page={jobsPageSafe} total={sortedJobs.length} onChange={setJobsPage} />
             <table className="w-full text-left text-sm">
               <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
                 <tr>
@@ -2725,14 +2839,14 @@ function describeScrapeProgress(p) {
                 ))}
               </tbody>
             </table>
-            <Pager page={jobsPageSafe} total={sortedJobs.length} onChange={setJobsPage} />
+            <Pager position="bottom" anchorId="jobs-table" page={jobsPageSafe} total={sortedJobs.length} onChange={setJobsPage} />
             </>
           )}
         </section>
         )}
 
         {tab === 'filtered' && (
-        <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <section id="filt-table" className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
             <select
               value={filterReason}
@@ -2765,6 +2879,27 @@ function describeScrapeProgress(p) {
               {visibleFiltered.length} of {pendingFiltered.length}
             </span>
           </div>
+          {selectedFiltered.length > 0 && (
+            <div className="flex flex-wrap items-center gap-3 border-b border-neutral-200 bg-neutral-100 px-4 py-2.5 dark:border-neutral-800 dark:bg-neutral-900">
+              <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+                {selectedFiltered.length} selected
+              </span>
+              <button
+                onClick={bulkDismissFiltered}
+                disabled={filtBulkBusy}
+                title="Dismiss all selected postings at once (one confirm, undoable as the most recent action)"
+                className="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              >
+                {filtBulkBusy ? 'Dismissing…' : 'Dismiss selected'}
+              </button>
+              <button
+                onClick={() => setSelectedFiltered([])}
+                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                Clear
+              </button>
+            </div>
+          )}
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
               Loading filtered postings…
@@ -2776,9 +2911,19 @@ function describeScrapeProgress(p) {
             </div>
           ) : (
             <>
+            <Pager position="top" page={filtPageSafe} total={visibleFiltered.length} onChange={setFiltPage} />
             <table className="w-full text-left text-sm">
               <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
                 <tr>
+                  <th className="w-10 px-4 py-3 font-medium">
+                    <input
+                      type="checkbox"
+                      checked={filtPageRows.length > 0 && filtPageRows.every((job) => selectedFiltered.includes(job.id))}
+                      onChange={() => toggleSelectAllFiltered(filtPageRows)}
+                      title={selectedFiltered.length ? 'Deselect these rows' : 'Select these rows'}
+                      className="accent-neutral-800"
+                    />
+                  </th>
                   <th className="px-4 py-3 font-medium">Title</th>
                   <th className="px-4 py-3 font-medium">Company</th>
                   <th className="px-4 py-3 font-medium">Source</th>
@@ -2810,6 +2955,15 @@ function describeScrapeProgress(p) {
                 {filtPageRows.map((job) => (
                   <Fragment key={job.id}>
                   <tr data-row-id={`f${job.id}`} className="hover:bg-neutral-50 dark:hover:bg-neutral-800/50">
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedFiltered.includes(job.id)}
+                        onChange={() => toggleSelectFiltered(job.id)}
+                        title={`Select "${job.title || 'Untitled'}"`}
+                        className="accent-neutral-800"
+                      />
+                    </td>
                     <td className="px-4 py-3">
                       <a
                         href={job.url}
@@ -2889,7 +3043,7 @@ function describeScrapeProgress(p) {
                   </tr>
                   {reviewId === job.id && (
                     <tr className="bg-emerald-50 dark:bg-emerald-950/40">
-                      <td colSpan={7} className="px-4 py-2.5">
+                      <td colSpan={8} className="px-4 py-2.5">
                         <div className="flex flex-wrap items-center gap-2 text-xs">
                           <span className="font-medium text-neutral-700 dark:text-neutral-200">
                             Did you submit the application for “{job.title || 'Untitled'}”?
@@ -2924,14 +3078,14 @@ function describeScrapeProgress(p) {
                 ))}
               </tbody>
             </table>
-            <Pager page={filtPageSafe} total={visibleFiltered.length} onChange={setFiltPage} />
+            <Pager position="bottom" anchorId="filt-table" page={filtPageSafe} total={visibleFiltered.length} onChange={setFiltPage} />
             </>
           )}
         </section>
         )}
 
         {tab === 'applications' && (
-        <section className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <section id="apps-table" className="mt-6 overflow-x-auto rounded-xl border border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
           <div className="flex flex-wrap items-center gap-2 border-b border-neutral-200 px-4 py-3 dark:border-neutral-800">
             {[
               ['all', `All (${appCounts.total})`],
@@ -2984,6 +3138,7 @@ function describeScrapeProgress(p) {
             </div>
           ) : (
             <>
+            <Pager position="top" page={appsPageSafe} total={applicationRows.length} onChange={setAppsPage} />
             <table className="w-full text-left text-sm">
               <thead className="border-b border-neutral-200 bg-neutral-50 text-xs uppercase tracking-wide text-neutral-500 dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-400">
                 <tr>
@@ -3002,7 +3157,7 @@ function describeScrapeProgress(p) {
                 ))}
               </tbody>
             </table>
-            <Pager page={appsPageSafe} total={applicationRows.length} onChange={setAppsPage} />
+            <Pager position="bottom" anchorId="apps-table" page={appsPageSafe} total={applicationRows.length} onChange={setAppsPage} />
             </>
           )}
         </section>
