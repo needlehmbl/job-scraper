@@ -591,6 +591,9 @@ export default function App() {
   const [manualUrl, setManualUrl] = useState('')
   const [manualOpen, setManualOpen] = useState(false)
   const [manualBusy, setManualBusy] = useState(false)
+  const [manualTitle, setManualTitle] = useState('')
+  const [manualCompany, setManualCompany] = useState('')
+  const [manualLocation, setManualLocation] = useState('')
 
   // Undo: most-recent mutating action only, no cooldown. `lastAction` is a
   // descriptor { kind, label, ...payload }; `undoArmed` flips true on the
@@ -724,18 +727,28 @@ export default function App() {
     if (!url || manualBusy) return
     setManualBusy(true)
     try {
+      const payload = { url }
+      const title = (manualTitle || '').trim()
+      const company = (manualCompany || '').trim()
+      const location = (manualLocation || '').trim()
+      if (title) payload.title = title
+      if (company) payload.company = company
+      if (location) payload.location = location
       const pr = await fetch(`${API}/jobs/manual-add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify(payload),
       })
       const data = await pr.json().catch(() => ({}))
       if (!pr.ok) throw new Error(data.detail || `manual add failed (${pr.status})`)
       const job = data.job || {}
-      const title = job.title || url
+      const jobTitle = job.title || url
       const note = data.note ? ` (${data.note})` : ''
-      toast.success(data.moved ? `Already tracked — moved "${title}" to Applications` : `Added "${title}" to Applications${note}`)
+      toast.success(data.moved ? `Already tracked — moved "${jobTitle}" to Applications` : `Added "${jobTitle}" to Applications${note}`)
       setManualUrl('')
+      setManualTitle('')
+      setManualCompany('')
+      setManualLocation('')
       setManualOpen(false)
       fetchAll()
     } catch (e) {
@@ -743,7 +756,7 @@ export default function App() {
     } finally {
       setManualBusy(false)
     }
-  }, [manualUrl, manualBusy, fetchAll])
+  }, [manualUrl, manualTitle, manualCompany, manualLocation, manualBusy, fetchAll])
 
   // Light refresh after single-row mutations: the optimistic update above
   // already fixed local state, so only /jobs needs re-syncing. Stats,
@@ -3261,6 +3274,7 @@ function describeScrapeProgress(p) {
             <h3 className="text-base font-semibold">Track an external application</h3>
             <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
               Paste the posting URL — it is fetched, deduped, and moved to Applications.
+              Title/company are optional: fill them in when the site blocks auto-fetch (e.g. Indeed).
             </p>
             <input
               type="url"
@@ -3271,6 +3285,32 @@ function describeScrapeProgress(p) {
               onKeyDown={(e) => { if (e.key === 'Enter') submitManualAdd() }}
               className="mt-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800"
             />
+            <input
+              type="text"
+              placeholder="Job title (optional)"
+              value={manualTitle}
+              onChange={(e) => setManualTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitManualAdd() }}
+              className="mt-2 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+            />
+            <div className="mt-2 flex gap-2">
+              <input
+                type="text"
+                placeholder="Company (optional)"
+                value={manualCompany}
+                onChange={(e) => setManualCompany(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitManualAdd() }}
+                className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              />
+              <input
+                type="text"
+                placeholder="Location (optional)"
+                value={manualLocation}
+                onChange={(e) => setManualLocation(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitManualAdd() }}
+                className="w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+              />
+            </div>
             <div className="mt-4 flex justify-end gap-2">
               <button
                 onClick={() => !manualBusy && setManualOpen(false)}

@@ -326,3 +326,29 @@ def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
             "description": desc,
             "site": site,
             "fetch_limited": not bool(title)}
+PLACEHOLDER_TITLES = frozenset({"untitled (manual)", "untitled", ""})
+
+
+def is_placeholder_title(title: str) -> bool:
+    """True when the stored title is an auto-fill placeholder (or empty)."""
+    return (title or "").strip().lower() in PLACEHOLDER_TITLES
+
+
+def resolve_manual_fields(fetched: dict, override: dict) -> dict:
+    """Merge user-typed modal fields over auto-fetched ones.
+
+    A non-blank override always wins (covers Indeed's bot-wall); blanks
+    fall back to fetched values, then to safe defaults. Pure function.
+    """
+    fetched = fetched or {}
+    override = override or {}
+
+    def pick(key: str) -> str:
+        v = (override.get(key) or "").strip()
+        return v or (fetched.get(key) or "").strip()
+
+    title = pick("title") or "Untitled (manual)"
+    company = pick("company")
+    location = pick("location") or fetched.get("location")
+    return {"title": title[:500], "company": company[:300],
+            "location": (location[:300] if location else None)}

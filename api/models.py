@@ -112,9 +112,16 @@ class FilteredReinsert(BaseModel):
 
 
 class ManualAddRequest(BaseModel):
-    """Manual intake: one externally-found posting URL -> Applications."""
+    """Manual intake: one externally-found posting URL -> Applications.
+
+    title/company/location are optional user-typed overrides (the modal):
+    non-blank values win over auto-fetched ones (covers Indeed's bot-wall).
+    """
 
     url: str = Field(min_length=8, max_length=2000)
+    title: str | None = Field(default=None, max_length=500)
+    company: str | None = Field(default=None, max_length=300)
+    location: str | None = Field(default=None, max_length=300)
 
 
 def now_utc() -> datetime:
