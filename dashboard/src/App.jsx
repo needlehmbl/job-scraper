@@ -731,6 +731,36 @@ export default function App() {
     }
   }, [])
 
+  // Filtered-only refresh: dismiss/restore touch filtered_jobs, not jobs or
+  // stats, so awaiting the full 5-endpoint fetchAll just blocks the UI on
+  // the slowest endpoint (/stats). Refresh the tab, let stats follow.
+  const refreshFiltered = useCallback(async () => {
+    try {
+      const r = await fetch(API + '/filtered')
+      const fj = await r.json().catch(() => [])
+      const list = Array.isArray(fj) ? fj : []
+      setFilteredJobs(list)
+      setSelectedFiltered((prev) =>
+        prev.filter((id) => list.some((job) => job.id === id))
+      )
+    } catch (e) {
+      console.error('dashboard filtered refresh failed:', e)
+    }
+  }, [])
+
+  // Stats (cards + outcomes graph) refresh in the background: review-apply
+  // changes APPLIED counts, so it needs a re-sync, but the tab must not
+  // wait on its ~12 queries. Dismiss paths skip this entirely (stats only
+  // reads jobs/history, never filtered_jobs).
+  const refreshStats = useCallback(async () => {
+    try {
+      const r = await fetch(API + '/stats')
+      setStats(await r.json())
+    } catch (e) {
+      console.error('dashboard stats refresh failed:', e)
+    }
+  }, [])
+
   const bulkApplyStatus = useCallback(async () => {
     if (!bulkStatus || selected.length === 0 || bulkBusy) return
     const prevs = selected.map((id) => ({
@@ -1317,6 +1347,7 @@ export default function App() {
       if (reviewBusy) return
       setReviewBusy(true)
       const title = job.title || 'Untitled'
+      let ok = false
       try {
         const r = await fetch(`${API}/filtered/${job.id}/restore`, {
           method: 'POST',
@@ -1341,6 +1372,10 @@ export default function App() {
           label: `Applied to "${title}" from Filtered review`,
         })
         setReviewId(null)
+        // Drop the row locally so the queue advances instantly; re-sync
+        // jobs + filtered, stats follow in the background (see refreshStats).
+        setFilteredJobs((prev) => prev.filter((f) => f.id !== job.id))
+        ok = true
         // No reveal on this path: the user is working through a queue and
         // staying put is worth more than pointing at the new Applications row.
         toast.success(`Applied to "${title}" — now tracked in Applications`)
@@ -1348,10 +1383,16 @@ export default function App() {
         console.error('review apply failed:', e)
         toast.error(`Could not record the application: ${e.message}`)
       }
-      await fetchAll()
+      if (ok) {
+        await refreshJobs()
+        await refreshFiltered()
+        refreshStats()
+      } else {
+        await fetchAll()
+      }
       setReviewBusy(false)
     },
-    [reviewBusy, recordAction, fetchAll]
+    [reviewBusy, recordAction, fetchAll, refreshJobs, refreshFiltered, refreshStats]
   )
 
   const deleteFiltered = useCallback(
@@ -1383,12 +1424,16 @@ export default function App() {
             opts.label ||
             `Dismissed "${job.title || 'Untitled'}" from Filtered review`,
         })
+        // Dismiss only touches filtered_jobs -- stats reads jobs/history, so
+        // no stats refresh needed. Drop locally, re-sync the tab.
+        setFilteredJobs((prev) => prev.filter((f) => f.id !== job.id))
+        await refreshFiltered()
       } catch (e) {
         console.error('filtered delete failed:', e)
+        await fetchAll()
       }
-      await fetchAll()
     },
-    [fetchAll, recordAction]
+    [fetchAll, refreshFiltered, recordAction]
   )
 
   // Filtered review's "not this one": the strip is the confirmation, so no
@@ -1428,6 +1473,7 @@ export default function App() {
       search_term: job.search_term || null,
       filter_reason: job.filter_reason || '',
     }))
+    const ids = new Set(targets.map((job) => job.id))
     setFiltBulkBusy(true)
     try {
       await Promise.all(
@@ -1440,12 +1486,15 @@ export default function App() {
       })
       setSelectedFiltered([])
       if (reviewId !== null && selectedFiltered.includes(reviewId)) setReviewId(null)
+      // Same as single dismiss: stats untouched, tab re-syncs only.
+      setFilteredJobs((prev) => prev.filter((f) => !ids.has(f.id)))
+      await refreshFiltered()
     } catch (e) {
       console.error('filtered bulk dismiss failed:', e)
+      await fetchAll()
     }
-    await fetchAll()
     setFiltBulkBusy(false)
-  }, [selectedFiltered, filtBulkBusy, filteredJobs, reviewId, fetchAll, recordAction])
+  }, [selectedFiltered, filtBulkBusy, filteredJobs, reviewId, fetchAll, refreshFiltered, recordAction])
 
   const markGroupDupe = useCallback(
     async (group) => {

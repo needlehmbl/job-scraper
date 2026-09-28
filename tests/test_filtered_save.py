@@ -72,3 +72,28 @@ def test_normal_rows_still_saved_alongside_repeats():
     )
     assert n == 1
     assert conn.cur.inserts == 1
+
+
+class _PurgeCursor(_FakeCursor):
+    def __init__(self, rowcount):
+        super().__init__()
+        self.rowcount = rowcount
+        self.last_sql = ""
+
+    def execute(self, *args):
+        self.last_sql = args[0] if args else ""
+        super().execute(*args)
+
+
+class _PurgeConn(_FakeConn):
+    def __init__(self, rowcount):
+        self.cur = _PurgeCursor(rowcount)
+        self.committed = False
+
+
+def test_purge_repeat_seen_deletes_only_repeat_rows():
+    conn = _PurgeConn(rowcount=3)
+    n = db_module.purge_repeat_seen_filtered(conn=conn)
+    assert n == 3
+    assert "repeat-seen" in conn.cur.last_sql
+    assert conn.committed is True

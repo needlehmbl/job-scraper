@@ -477,6 +477,30 @@ def delete_filtered_job(fid: int, conn=None) -> bool:
             conn.close()
 
 
+def purge_repeat_seen_filtered(conn=None) -> int:
+    """One-time purge: permanently drop held rows whose reason is `repeat-seen:*`.
+
+    Reposts of already-judged listings teach nothing, and new ones never
+    reach the tab (see save_filtered_jobs) -- this clears the backlog that
+    accumulated before that drop existed. No undo: use the dashboard
+    dismiss for anything that needs restoring.
+    """
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM filtered_jobs WHERE filter_reason LIKE 'repeat-seen:%'"
+            )
+            n = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            conn.commit()
+            return n
+    finally:
+        if own:
+            conn.close()
+
+
 def unrestore_filtered_job(fid: int, conn=None) -> dict | None:
     """Undo a restore: flip `restored` back to FALSE and drop the auto-created
     triage row (same URL) if it is still untouched (status NEW)."""
