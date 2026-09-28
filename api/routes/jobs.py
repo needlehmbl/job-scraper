@@ -5,9 +5,145 @@ from fastapi import APIRouter, HTTPException
 
 from api import db
 from api.models import (FollowUpUpdate, HistoryEntry, Job, JobStatusUpdate,
-                        OfferUpdate, StageUpdate)
+                         ManualAddRequest, OfferUpdate, StageUpdate)
 
 router = APIRouter()
+
+
+def _move_to_applied(cur, job_id: int, old_status, old_stage):
+    """Shared flip-to-APPLIED used by PATCH and manual-add dedupe moves."""
+    cur.execute(
+        """
+        UPDATE jobs SET status = 'APPLIED', applied_at = %s,
+                        status_updated_at = %s,
+                        stage = COALESCE(stage, 'APPLIED')
+        WHERE id = %s RETURNING *
+        """,
+        (datetime.now(timezone.utc), datetime.now(timezone.utc), job_id),
+    )
+    row = cur.fetchone()
+    cols = [d.name for d in cur.description]
+    result = dict(zip(cols, row))
+    if old_status != "APPLIED":
+        cur.execute(
+            """
+            INSERT INTO job_status_history (job_id, old_status, new_status)
+            VALUES (%s, %s, 'APPLIED')
+            """,
+            (job_id, old_status),
+        )
+    if (old_stage or None) != result.get("stage"):
+        cur.execute(
+            """
+            INSERT INTO job_stage_history (job_id, old_stage, new_stage)
+            VALUES (%s, %s, %s)
+            """,
+            (job_id, old_stage, result.get("stage")),
+        )
+    return result
+
+
+@router.post("/manual-add", response_model=dict)
+def manual_add(body: ManualAddRequest):
+    """Track an externally-found posting URL as APPLIED.
+
+    Dedupes by normalized URL then title+company fingerprint
+    (dedupe.py): existing rows are moved to APPLIED, new rows are
+    inserted directly as APPLIED with stage APPLIED.
+    """
+    import sys
+    from pathlib import Path
+
+    ROOT = Path(__file__).resolve().parents[2]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import manual_fetch as mf
+
+    raw = (body.url or "").strip()
+    if not (raw.startswith("http://") or raw.startswith("https://") or "." in raw):
+        raise HTTPException(status_code=400, detail="invalid URL")
+    url = mf.normalize_url(raw)
+    if not url:
+        raise HTTPException(status_code=400, detail="invalid URL")
+
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, status, stage FROM jobs WHERE url = %s", (url,))
+        hit = cur.fetchone()
+        if hit:
+            jid, old_status, old_stage = hit[0], hit[1], hit[2]
+            result = _move_to_applied(cur, jid, old_status, old_stage)
+            conn.commit()
+            return {"moved": True, "job": result}
+
+        fetched = mf.fetch_job_from_url(url)
+        title = (fetched.get("title") or "").strip() or "Untitled (manual)"
+        company = (fetched.get("company") or "").strip()
+        # Fingerprint fallback: same listing, different URL.
+        try:
+            import dedupe as dedupe_mod
+
+            fp = dedupe_mod.fingerprint(title, company)
+            if fp and company:
+                cur.execute("SELECT id, title, company, status, stage FROM jobs")
+                for cid, ctitle, ccompany, cstatus, cstage in cur.fetchall():
+                    if dedupe_mod.fingerprint(ctitle, ccompany) == fp:
+                        result = _move_to_applied(cur, cid, cstatus, cstage)
+                        conn.commit()
+                        return {"moved": True, "job": result}
+        except Exception:
+            pass
+
+        site = fetched.get("site") or "manual"
+        try:
+            import score as score_mod
+
+            f_score, f_reason = score_mod.score_job(
+                title, company, fetched.get("description") or "")
+        except Exception:
+            f_score, f_reason = 0, ""
+        now = datetime.now(timezone.utc)
+        cur.execute(
+            """
+            INSERT INTO jobs (source, title, company, url, location,
+                              date_posted, status, applied_at,
+                              status_updated_at, stage, score, score_reason,
+                              description)
+            VALUES (%s, %s, %s, %s, %s, NULL, 'APPLIED', %s, %s,
+                    'APPLIED', %s, %s, %s)
+            ON CONFLICT (url) DO NOTHING
+            RETURNING *
+            """,
+            (site, title, company, url, fetched.get("location"),
+             now, now, f_score or 0, f_reason or "",
+             fetched.get("description")),
+        )
+        row = cur.fetchone()
+        if row is None:  # lost a race with a concurrent insert; move it
+            cur.execute("SELECT id, status, stage FROM jobs WHERE url = %s", (url,))
+            hit = cur.fetchone()
+            if hit:
+                result = _move_to_applied(cur, hit[0], hit[1], hit[2])
+                conn.commit()
+                return {"moved": True, "job": result}
+            raise HTTPException(status_code=500, detail="insert failed")
+        cols = [d.name for d in cur.description]
+        result = dict(zip(cols, row))
+        cur.execute(
+            """
+            INSERT INTO job_status_history (job_id, old_status, new_status)
+            VALUES (%s, NULL, 'APPLIED')
+            """,
+            (result["id"],),
+        )
+        cur.execute(
+            """
+            INSERT INTO job_stage_history (job_id, old_stage, new_stage)
+            VALUES (%s, NULL, 'APPLIED')
+            """,
+            (result["id"],),
+        )
+        conn.commit()
+        return {"moved": False, "job": result}
 
 
 @router.get("", response_model=list[Job])

@@ -111,5 +111,11 @@ class FilteredReinsert(BaseModel):
     filter_reason: str = ""
 
 
+class ManualAddRequest(BaseModel):
+    """Manual intake: one externally-found posting URL -> Applications."""
+
+    url: str = Field(min_length=8, max_length=2000)
+
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)

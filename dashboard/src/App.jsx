@@ -588,6 +588,9 @@ export default function App() {
   const [tailorResult, setTailorResult] = useState(null)
   const [tailorLoading, setTailorLoading] = useState(false)
   const [tailorError, setTailorError] = useState('')
+  const [manualUrl, setManualUrl] = useState('')
+  const [manualOpen, setManualOpen] = useState(false)
+  const [manualBusy, setManualBusy] = useState(false)
 
   // Undo: most-recent mutating action only, no cooldown. `lastAction` is a
   // descriptor { kind, label, ...payload }; `undoArmed` flips true on the
@@ -715,6 +718,31 @@ export default function App() {
     setShowShutdownConfirm(false)
     setStopped(true)
   }, [])
+
+  const submitManualAdd = useCallback(async () => {
+    const url = (manualUrl || '').trim()
+    if (!url || manualBusy) return
+    setManualBusy(true)
+    try {
+      const pr = await fetch(`${API}/jobs/manual-add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      const data = await pr.json().catch(() => ({}))
+      if (!pr.ok) throw new Error(data.detail || `manual add failed (${pr.status})`)
+      const job = data.job || {}
+      const title = job.title || url
+      toast.success(data.moved ? `Already tracked — moved "${title}" to Applications` : `Added "${title}" to Applications`)
+      setManualUrl('')
+      setManualOpen(false)
+      fetchAll()
+    } catch (e) {
+      toast.error(e.message || 'Manual add failed')
+    } finally {
+      setManualBusy(false)
+    }
+  }, [manualUrl, manualBusy, fetchAll])
 
   // Light refresh after single-row mutations: the optimistic update above
   // already fixed local state, so only /jobs needs re-syncing. Stats,
@@ -3175,6 +3203,13 @@ function describeScrapeProgress(p) {
             <span className="text-sm text-neutral-500 dark:text-neutral-400">
               {applicationRows.length} of {appCounts.total}
             </span>
+            <button
+              onClick={() => setManualOpen(true)}
+              title="Track a posting you found yourself — paste its URL and it is fetched into Applications"
+              className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+            >
+              + Add manually
+            </button>
           </div>
           {loading ? (
             <div className="p-8 text-center text-sm text-neutral-500 dark:text-neutral-400">
@@ -3212,6 +3247,47 @@ function describeScrapeProgress(p) {
         </section>
         )}
       </main>
+
+      {manualOpen && (
+        <div
+          className="fixed inset-0 z-20 flex items-start justify-center overflow-y-auto bg-neutral-900/50 p-4"
+          onClick={() => !manualBusy && setManualOpen(false)}
+        >
+          <div
+            className="mt-24 w-full max-w-lg rounded-xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-semibold">Track an external application</h3>
+            <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
+              Paste the posting URL — it is fetched, deduped, and moved to Applications.
+            </p>
+            <input
+              type="url"
+              autoFocus
+              placeholder="https://…"
+              value={manualUrl}
+              onChange={(e) => setManualUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitManualAdd() }}
+              className="mt-4 w-full rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm dark:border-neutral-700 dark:bg-neutral-800"
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                onClick={() => !manualBusy && setManualOpen(false)}
+                className="rounded-lg px-3 py-1.5 text-sm text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitManualAdd}
+                disabled={!manualUrl.trim() || manualBusy}
+                className="rounded-lg bg-neutral-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
+              >
+                {manualBusy ? 'Adding…' : 'Add to Applications'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {tailorJob && (
         <div
