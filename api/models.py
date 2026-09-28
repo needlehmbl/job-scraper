@@ -64,6 +64,18 @@ class OfferUpdate(BaseModel):
     offer_cons: str | None = None
 
 
+class JobDetailsUpdate(BaseModel):
+    """Manual correction of a tracked row's identity fields.
+
+    All optional; only non-None fields are changed. Blank-after-strip
+    title/company are rejected (400) since empty identity breaks dedupe.
+    """
+
+    title: str | None = Field(default=None, max_length=500)
+    company: str | None = Field(default=None, max_length=300)
+    location: str | None = Field(default=None, max_length=300)
+
+
 class HistoryEntry(BaseModel):
     kind: str = "status"  # status | stage
     old_status: str | None = None

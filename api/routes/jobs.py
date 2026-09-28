@@ -4,8 +4,9 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from api import db
-from api.models import (FollowUpUpdate, HistoryEntry, Job, JobStatusUpdate,
-                         ManualAddRequest, OfferUpdate, StageUpdate)
+from api.models import (FollowUpUpdate, HistoryEntry, Job, JobDetailsUpdate,
+                         JobStatusUpdate, ManualAddRequest, OfferUpdate,
+                         StageUpdate)
 
 router = APIRouter()
 
@@ -369,6 +370,43 @@ def update_followup(job_id: int, body: FollowUpUpdate):
         cur.execute(
             "UPDATE jobs SET follow_up_at = %s WHERE id = %s RETURNING *",
             (body.follow_up_at, job_id),
+        )
+        row = cur.fetchone()
+        cols = [d.name for d in cur.description]
+        result = dict(zip(cols, row))
+        conn.commit()
+        return result
+
+
+@router.patch("/{job_id}/details", response_model=Job)
+def update_details(job_id: int, body: JobDetailsUpdate):
+    """Manually correct a tracked row's title / company / location.
+
+    Only the fields present in the body are changed. Title/company that
+    arrive blank-after-strip are rejected: empty identity breaks the
+    fingerprint dedupe. Location accepts empty string to clear it.
+    """
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    cleaned: dict = {}
+    for key, val in updates.items():
+        s = val.strip() if isinstance(val, str) else val
+        if key in ("title", "company") and not s:
+            raise HTTPException(
+                status_code=400, detail=f"{key} must not be blank")
+        cleaned[key] = s[:500] if key == "title" else (
+            s[:300] if isinstance(s, str) else s)
+    if "location" in cleaned and cleaned["location"] == "":
+        cleaned["location"] = None
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="job not found")
+        set_clause = ", ".join(f"{k} = %s" for k in cleaned)
+        cur.execute(
+            f"UPDATE jobs SET {set_clause} WHERE id = %s RETURNING *",
+            (*cleaned.values(), job_id),
         )
         row = cur.fetchone()
         cols = [d.name for d in cur.description]

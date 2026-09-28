@@ -314,6 +314,12 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
   const [cons, setCons] = useState(job.offer_cons || '')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [editTitle, setEditTitle] = useState(job.title || '')
+  const [editCompany, setEditCompany] = useState(job.company || '')
+  const [editLocation, setEditLocation] = useState(job.location || '')
+  const [detailsNote, setDetailsNote] = useState('')
+  const [detailsSaving, setDetailsSaving] = useState(false)
 
   const stage = job.stage || 'APPLIED'
   const isOffer = OFFER_STAGES.includes(stage)
@@ -324,7 +330,13 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
     setBenefits(job.offer_benefits || '')
     setPros(job.offer_pros || '')
     setCons(job.offer_cons || '')
-  }, [job.offer_salary, job.offer_benefits, job.offer_pros, job.offer_cons])
+    if (!editing) {
+      setEditTitle(job.title || '')
+      setEditCompany(job.company || '')
+      setEditLocation(job.location || '')
+    }
+  }, [job.offer_salary, job.offer_benefits, job.offer_pros, job.offer_cons,
+    job.title, job.company, job.location, editing])
 
   const loadHistory = useCallback(async () => {
     if (history !== null) return
@@ -368,6 +380,35 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
     }
     setSaving(false)
   }, [job.id, onChanged])
+
+  const saveDetails = useCallback(async () => {
+    const patch = {}
+    if (editTitle.trim() !== (job.title || '')) patch.title = editTitle.trim()
+    if (editCompany.trim() !== (job.company || '')) patch.company = editCompany.trim()
+    if (editLocation.trim() !== (job.location || '')) patch.location = editLocation.trim()
+    if (Object.keys(patch).length === 0) {
+      setDetailsNote('No changes.')
+      return
+    }
+    setDetailsSaving(true)
+    setDetailsNote('')
+    try {
+      const r = await fetch(`${API}/jobs/${job.id}/details`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(data.detail || `save failed (${r.status})`)
+      setDetailsNote('Saved.')
+      setEditing(false)
+      await onChanged()
+    } catch (e) {
+      console.error('details save failed:', e)
+      setDetailsNote(`Save failed: ${e.message}`)
+    }
+    setDetailsSaving(false)
+  }, [job.id, job.title, job.company, job.location, editTitle, editCompany, editLocation, onChanged])
 
   return (
     <>
@@ -440,7 +481,57 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
       {open && (
         <tr className="bg-neutral-50 dark:bg-neutral-800/30">
           <td colSpan={6} className="px-8 py-3">
-            <h4 className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Timeline</h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Listing</h4>
+              <button
+                onClick={() => {
+                  if (editing) {
+                    setEditTitle(job.title || '')
+                    setEditCompany(job.company || '')
+                    setEditLocation(job.location || '')
+                    setDetailsNote('')
+                  }
+                  setEditing((v) => !v)
+                }}
+                title="Fix the job title, company, or location (e.g. Untitled auto-fetches)"
+                className="rounded-lg border border-neutral-300 px-2 py-0.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                {editing ? 'Cancel' : 'Edit'}
+              </button>
+            </div>
+            {editing ? (
+              <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <label className="text-xs text-neutral-600 dark:text-neutral-400">
+                  Title
+                  <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)}
+                    placeholder="Job title"
+                    className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+                </label>
+                <label className="text-xs text-neutral-600 dark:text-neutral-400">
+                  Company
+                  <input value={editCompany} onChange={(e) => setEditCompany(e.target.value)}
+                    placeholder="Company"
+                    className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+                </label>
+                <label className="text-xs text-neutral-600 dark:text-neutral-400">
+                  Location
+                  <input value={editLocation} onChange={(e) => setEditLocation(e.target.value)}
+                    placeholder="Location (optional)"
+                    className="mt-1 w-full rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+                </label>
+                <div className="flex items-center gap-3 sm:col-span-3">
+                  <button
+                    onClick={saveDetails}
+                    disabled={detailsSaving}
+                    className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                  >
+                    {detailsSaving ? 'Saving…' : 'Save'}
+                  </button>
+                  {detailsNote && <span className="text-xs text-neutral-500 dark:text-neutral-400" role="status">{detailsNote}</span>}
+                </div>
+              </div>
+            ) : null}
+            <h4 className="mt-3 text-xs font-medium text-neutral-500 dark:text-neutral-400">Timeline</h4>
             {history === null ? (
               <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">Loading…</p>
             ) : history.length === 0 ? (
