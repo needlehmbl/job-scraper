@@ -143,7 +143,11 @@ def manual_add(body: ManualAddRequest):
             (result["id"],),
         )
         conn.commit()
-        return {"moved": False, "job": result}
+        note = ""
+        if not fetched.get("title"):
+            note = fetched.get("fetch_note") or (
+                "details could not be fetched — saved with URL only")
+        return {"moved": False, "job": result, "note": note}
 
 
 @router.get("", response_model=list[Job])

@@ -67,3 +67,21 @@ def test_no_browser_fallback_for_plain_hosts(monkeypatch):
     assert called == []
     assert out["title"] == ""
     assert out["fetch_limited"] is True
+
+
+def test_indeed_canonical_keeps_only_jk():
+    url = normalize_url(
+        "https://ph.indeed.com/viewjob?jk=ABC123&from=mobRdr&tk=xyz&xpse=1&xfps=2&xkcb=3")
+    assert url == "https://ph.indeed.com/viewjob?jk=ABC123"
+
+
+def test_walled_note_present_for_indeed(monkeypatch):
+    class Walled:
+        status_code = 401
+        text = "Authenticating..."
+    monkeypatch.setattr(manual_fetch.requests, "get",
+                        lambda *a, **k: Walled())
+    monkeypatch.setattr(manual_fetch, "fetch_with_browser", lambda u, s: {})
+    out = manual_fetch.fetch_job_from_url("https://ph.indeed.com/viewjob?jk=ABC")
+    assert out["title"] == ""
+    assert "blocks anonymous fetching" in out["fetch_note"]

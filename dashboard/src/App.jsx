@@ -733,7 +733,8 @@ export default function App() {
       if (!pr.ok) throw new Error(data.detail || `manual add failed (${pr.status})`)
       const job = data.job || {}
       const title = job.title || url
-      toast.success(data.moved ? `Already tracked — moved "${title}" to Applications` : `Added "${title}" to Applications`)
+      const note = data.note ? ` (${data.note})` : ''
+      toast.success(data.moved ? `Already tracked — moved "${title}" to Applications` : `Added "${title}" to Applications${note}`)
       setManualUrl('')
       setManualOpen(false)
       fetchAll()

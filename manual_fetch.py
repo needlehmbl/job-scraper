@@ -35,6 +35,13 @@ _TRACKING_PARAMS = frozenset({
     "utm_id", "gclid", "fbclid", "mc_cid", "mc_eid", "igshid", "sk",
 })
 
+# Identity-only query params per host: everything else is per-click
+# tracking that would splinter UNIQUE(url). Indeed is the big one --
+# ?from=&tk=&xpse=&xfps=&xkcb= change on every impression; jk is the job.
+_IDENTITY_PARAMS = {
+    "indeed": frozenset({"jk", "vjk"}),
+}
+
 
 def normalize_url(url: str) -> str:
     url = (url or "").strip()
@@ -51,8 +58,14 @@ def normalize_url(url: str) -> str:
     if not host:
         return url.lower().rstrip("/")
     port = f":{p.port}" if p.port and p.port not in (80, 443) else ""
-    kept = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
-            if k.lower() not in _TRACKING_PARAMS]
+    site = site_from_url(url)
+    identity = _IDENTITY_PARAMS.get(site)
+    if identity is not None:
+        kept = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+                if k.lower() in identity]
+    else:
+        kept = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+                if k.lower() not in _TRACKING_PARAMS]
     query = urlencode(kept)
     path = p.path or ""
     # Trabajo outbound redirect wraps the canonical /job-... link;
@@ -254,8 +267,12 @@ def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
     fetch_limited=True so tracking is never blocked.
     """
     site = site_from_url(url)
+    walled_note = (f"{site} blocks anonymous fetching "
+                   f"(bot-wall) — saved with URL only"
+                   if site in _BROWSER_HOSTS else "")
     blank = {"title": "", "company": "", "location": None,
-             "description": None, "site": site, "fetch_limited": True}
+             "description": None, "site": site, "fetch_limited": True,
+             "fetch_note": walled_note}
     soup = None
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
