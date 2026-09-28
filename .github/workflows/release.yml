@@ -133,13 +133,40 @@ jobs:
             xargs -r sha256sum > sha256sums.txt
           cat sha256sums.txt
           test -s sha256sums.txt || { echo "::error::no assets found to checksum"; exit 1; }
-      # generate_release_notes fills the body from every commit (and PR) since
-      # the previous release, so the changelog comes from the commit messages
-      # on dev that the merge carried in.
+      # The release body is built from commit subjects since the previous
+      # reachable tag, so the messages written on dev become the changelog
+      # (GitHub's auto-generated notes only list merged PRs, and this repo
+      # has a trunk-only merge-to-main flow with no PRs, so they come out
+      # empty). git describe on the tag's parent also self-heals when an
+      # older tag was deleted -- the nearest reachable tag wins.
+      - uses: actions/checkout@v4
+        with:
+          ref: "${{ inputs.tag || github.ref }}"
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Build changelog from commits
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          prev=$(git describe --tags --abbrev=0 "$tag^" 2>/dev/null || echo "")
+          {
+            echo "## What's changed"
+            if [ -n "$prev" ]; then
+              git log "$prev..$tag" --pretty=format:'- %s (%h)' --reverse
+            else
+              git log "$tag" --pretty=format:'- %s (%h)' --reverse | head -n 50
+            fi
+            echo ""
+            echo ""
+            if [ -n "$prev" ]; then
+              echo "**Full Changelog**: https://github.com/needlehmbl/job-scraper/compare/$prev...$tag"
+            fi
+          } > changelog.md
+          cat changelog.md
       - uses: softprops/action-gh-release@v2
         with:
           files: "assets/*"
           # On a dispatch, github.ref is the branch, not the tag, so the tag
           # has to be named explicitly.
           tag_name: "${{ inputs.tag || github.ref_name }}"
-          generate_release_notes: true
+          body_path: changelog.md
