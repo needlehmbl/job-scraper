@@ -83,7 +83,7 @@ const STATUS_STYLES = {
   DUPLICATE: 'bg-neutral-200 text-neutral-500 ring-neutral-300 line-through dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700',
 }
 
-// Negative-status hide pills: active (hiding) color per status.
+// Negative-status show pills: hidden by default, active (showing) color per status.
 const HIDE_ACTIVE_STYLES = {
   SKIP: 'bg-neutral-500 text-white ring-neutral-500',
   MISMATCH: 'bg-orange-500 text-white ring-orange-500 dark:bg-orange-500 dark:ring-orange-500',
@@ -626,7 +626,7 @@ export default function App() {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [search, setSearch] = useState('')
-  const [hidden, setHidden] = useState([])
+  const [hidden, setHidden] = useState([...HIDEABLE])
   const [hiddenSources, setHiddenSources] = useState([])
   const [selected, setSelected] = useState([])
   const [bulkStatus, setBulkStatus] = useState('')
@@ -2700,20 +2700,21 @@ function describeScrapeProgress(p) {
               </option>
             ))}
           </select>
+          <span className="text-sm text-neutral-500 dark:text-neutral-400">Show:</span>
           {HIDEABLE.map((s) => {
-            const isHidden = hidden.includes(s)
+            const isShown = !hidden.includes(s)
             return (
               <button
                 key={s}
                 onClick={() => toggleHidden(s)}
-                title={isHidden ? `Show ${s} postings` : `Hide ${s} postings`}
+                title={isShown ? `Hide ${s} postings` : `Show ${s} postings`}
                 className={`rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition ${
-                  isHidden
+                  isShown
                     ? HIDE_ACTIVE_STYLES[s]
                     : 'bg-white text-neutral-500 ring-neutral-300 hover:bg-neutral-100 dark:bg-neutral-800 dark:text-neutral-400 dark:ring-neutral-700 dark:hover:bg-neutral-700'
                 }`}
               >
-                {isHidden ? '✕' : '◌'} {s} ({hiddenCounts[s] || 0})
+                {isShown ? '✓' : '◌'} {s} ({hiddenCounts[s] || 0})
               </button>
             )
           })}
