@@ -72,6 +72,10 @@ def _clean_url(href: str, jobid: str = "") -> str:
     immediately goes OOO ("job is no longer available"). The old
     helper stripped all query params, so every stored Glassdoor link
     was broken.
+
+    When neither href nor data-jobid yields a jl, return "" so the
+    caller drops the card instead of storing an unreviewable path-only
+    link (those rows fill the Filtered tab with missing postings).
     """
     import re
     if not href and not jobid:
@@ -84,6 +88,8 @@ def _clean_url(href: str, jobid: str = "") -> str:
             jl = m.group(1)
     if not jl:
         jl = (jobid or "").strip()
+    if not jl:
+        return ""
     # Base path without query/fragment
     raw = href or ""
     path = raw.split("#", 1)[0].split("?", 1)[0] if raw else ""
@@ -91,12 +97,10 @@ def _clean_url(href: str, jobid: str = "") -> str:
         path = BASE + path
     elif path.startswith("http"):
         pass  # already absolute
-    elif jl:
+    else:
         # No usable path (rare) — fall back to jl-only view
         return f"{BASE}/job-listing/view.htm?jl={jl}"
-    else:
-        return ""
-    return f"{path}?jl={jl}" if jl else path
+    return f"{path}?jl={jl}"
 
 
 class GlassdoorScraper:
