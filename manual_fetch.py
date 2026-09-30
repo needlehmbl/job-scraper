@@ -94,17 +94,27 @@ _BROWSER_HOSTS = frozenset({"jobstreet", "linkedin", "indeed", "glassdoor"})
 
 # Rendered-page hooks per site, first hit wins. Mapped live against
 # ph.jobstreet.com/job/<id> (title: h1/job-detail-title, company:
-# advertiser-name, location: job-detail-location, body: jobAdDetails).
+# advertiser-name, location: job-detail-location, body: jobAdDetails) and
+# linkedin.com/jobs/view/<id> (title: h1.top-card-layout__title,
+# company: a.topcard__org-name-link, location: h4.top-card-layout__second-subline).
 _TITLE_SELECTORS = {
     "jobstreet": ["[data-automation='job-detail-title']", "h1"],
+    "linkedin": ["h1.top-card-layout__title",
+                 "[data-automation='job-detail-title']", "h1"],
     "default": ["h1"],
 }
 _COMPANY_SELECTORS = {
     "jobstreet": ["[data-automation='advertiser-name']"],
-    "default": [],
+    "linkedin": ["a.topcard__org-name-link",
+                 ".jobs-unified-top-card__company-name"],
+    "trabajo": ["span.job-chip"],
+    "default": ["[data-automation='jobCompany']", ".company-name",
+                ".job-company"],
 }
 _LOCATION_SELECTORS = {
     "jobstreet": ["[data-automation='job-detail-location']"],
+    "linkedin": ["h4.top-card-layout__second-subline",
+                 "[data-automation='jobLocation']"],
     "default": ["[data-automation='jobLocation']", ".job-location"],
 }
 _DESC_SELECTORS = {
@@ -124,6 +134,54 @@ def parse_jobstreet_og(og_title: str) -> tuple[str, str]:
     if not m:
         return "", ""
     return m.group("title").strip(), m.group("location").strip()
+
+
+# LinkedIn's anonymous shell/landing page embeds the identity in <title> as
+# "<Company> hiring <Title> in <Location>" (truncated). The real posting page
+# uses og:title "<Title> at <Company> — <site>". Both shapes are parsed here.
+_LINKEDIN_SHELL_RE = re.compile(
+    r"^(?P<company>.+?)\s+hiring\s+(?P<title>.+?)\s+in\s+(?P<location>.+?)\s*$",
+    re.IGNORECASE)
+
+# Trabajo's <title> is "<Title> in <Location> - <Company>" while og:title
+# carries the title alone, so the company/location live in the title tag.
+_TRABAJO_TITLE_RE = re.compile(
+    r"^(?P<title>.+?)\s+in\s+(?P<location>.+?)\s*-\s*(?P<company>.+?)\s*$",
+    re.IGNORECASE)
+
+
+def parse_linkedin_shell(title: str) -> tuple[str, str, str]:
+    """Split LinkedIn's '<Company> hiring <Title> in <Location>' shell title
+    into (title, company, location). Empty strings when it isn't that shape.
+    """
+    m = _LINKEDIN_SHELL_RE.match((title or "").strip())
+    if not m:
+        return "", "", ""
+    return (m.group("title").strip(), m.group("company").strip(),
+            m.group("location").strip())
+
+
+def parse_trabajo_title(title: str) -> tuple[str, str, str]:
+    """Split Trabajo's '<Title> in <Location> - <Company>' title tag into
+    (title, company, location). Empty strings when it isn't that shape.
+    """
+    m = _TRABAJO_TITLE_RE.match((title or "").strip())
+    if not m:
+        return "", "", ""
+    return (m.group("title").strip(), m.group("company").strip(),
+            m.group("location").strip())
+
+
+# Trailing decoration title-splits leave on the company: "Acme Inc. — ",
+# "Acme | LinkedIn", "Acme - Jobs". Strip separators and their padding.
+_COMPANY_TRAILING_RE = re.compile(r"\s+[—–\-|](?:\s+.*)?$")
+
+
+def _clean_company(name: str) -> str:
+    """Strip trailing site decoration from a company parsed out of a title."""
+    s = (name or "").strip()
+    s = _COMPANY_TRAILING_RE.sub("", s)
+    return s.strip()
 
 
 def _text(soup, selector: str) -> str:
@@ -217,6 +275,11 @@ def fetch_with_browser(url: str, site: str, timeout_ms: int = 60000) -> dict:
                     page, _COMPANY_SELECTORS.get(site, _COMPANY_SELECTORS["default"]))
                 location = _pick_first(
                     page, _LOCATION_SELECTORS.get(site, _LOCATION_SELECTORS["default"]))
+                if (site == "linkedin" and location and company
+                        and location.startswith(company)):
+                    # LinkedIn's subline is "<Company>  <Location>" — drop the
+                    # company prefix so location stays a bare locality.
+                    location = location[len(company):].strip()
                 desc = _pick_first(
                     page, _DESC_SELECTORS.get(site, _DESC_SELECTORS["default"]))
                 og_title = ""
@@ -260,6 +323,83 @@ def fetch_with_browser(url: str, site: str, timeout_ms: int = 60000) -> dict:
     return {}
 
 
+def _parse_html(soup, site: str) -> tuple[str, str, str, str, bool]:
+    """Extract (title, company, location, description, is_shell) from a
+    200-OK HTML page (fast path).
+
+    Site-specific shapes:
+      linkedin  og:title "<Title> at <Company> — <site>"; the anonymous
+                shell instead carries "<Company> hiring <Title> in <Location>"
+                in <title> — parsed company-first and flagged as a shell so
+                the caller retries in headless Chromium.
+      trabajo   og:title is title-only; <title> is
+                "<Title> in <Location> - <Company>".
+    """
+    def meta(prop: str) -> str:
+        try:
+            tag = soup.find("meta", property=prop) or \
+                soup.find("meta", attrs={"name": prop})
+            return (tag.get("content") or "").strip() if tag else ""
+        except Exception:
+            return ""
+
+    title_tag = ""
+    try:
+        title_tag = (soup.title.string or "").strip() if soup.title else ""
+    except Exception:
+        title_tag = ""
+    raw_title = meta("og:title") or _text(soup, "h1") or title_tag
+    title = raw_title
+    company = ""
+    location = None
+
+    shell = False
+    if site == "linkedin":
+        t, c, loc = parse_linkedin_shell(raw_title)
+        if c:
+            title, company, location = t, c, loc
+            shell = True
+    if not company and site != "linkedin":
+        # og:site_name is the SITE name on LinkedIn ("LinkedIn"), never the
+        # employer — every other board uses it for the company.
+        company = meta("og:site_name") or ""
+    if not company and title:
+        if site == "linkedin":
+            # og:title "<Title> at <Company> — <Location> | <site>": the
+            # company follows " at "; location/site suffixes are cleaned.
+            if " at " in title:
+                parts = title.split(" at ")
+                company = _clean_company(parts[-1])
+                title = " at ".join(parts[:-1]).strip()
+        else:
+            # Common pattern: "Senior Python Dev - Acme Corp | JobStreet"
+            # (company last)
+            for sep in (" - ", " | ", " at ", " @ "):
+                if sep in title:
+                    parts = title.split(sep)
+                    if len(parts) >= 2:
+                        company = _clean_company(parts[-1])
+                        title = sep.join(parts[:-1]).strip()
+                    break
+    if site == "trabajo":
+        t, c, loc = parse_trabajo_title(title_tag)
+        if c:
+            company = company or c
+            location = location or loc
+            title = title or t
+    company = _clean_company(company)
+    location = _text(
+        soup, "[data-automation='jobLocation'], .job-location, .location"
+    ) or location
+    if location:
+        location = _COMPANY_TRAILING_RE.sub("", location).strip() or None
+    desc = (_text(soup, "article") or _text(soup, "main") or
+            meta("og:description") or None)
+    if desc and len(desc) > 8000:
+        desc = desc[:8000]
+    return title, company, location or None, desc, shell
+
+
 def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
     """Fetch title/company/location/description for one posting URL.
 
@@ -281,47 +421,25 @@ def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
     except Exception:
         soup = None
     if soup is None:
-        # Plain GET hit the bot-wall or failed outright: render once in
-        # headless Chromium for walled hosts instead of saving Untitled.
-        if site in _BROWSER_HOSTS:
-            rendered = fetch_with_browser(url, site)
-            if rendered.get("title"):
-                return rendered
-        return blank
-
-    def meta(prop: str) -> str:
-        try:
-            tag = soup.find("meta", property=prop) or \
-                soup.find("meta", attrs={"name": prop})
-            return (tag.get("content") or "").strip() if tag else ""
-        except Exception:
-            return ""
-
-    title = meta("og:title") or _text(soup, "h1") or \
-        ((soup.title.string or "").strip() if soup.title and soup.title.string else "")
-    # Common pattern: "Senior Python Dev - Acme Corp | JobStreet"
-    company = meta("og:site_name") or ""
-    if not company and title:
-        for sep in (" - ", " | ", " at ", " @ "):
-            if sep in title:
-                parts = title.split(sep)
-                if len(parts) >= 2:
-                    company = parts[-1].strip()
-                    title = sep.join(parts[:-1]).strip()
-                    break
-    location = _text(soup, "[data-automation='jobLocation'], .job-location, .location") or None
-    desc = (_text(soup, "article") or _text(soup, "main") or
-            meta("og:description") or None)
-    if desc and len(desc) > 8000:
-        desc = desc[:8000]
-    if not title and site in _BROWSER_HOSTS:
-        # Plain GET hit the bot-wall (403 CF shell carries no title):
-        # render once in headless Chromium instead of saving Untitled.
+        # Plain GET failed outright (bot-wall, timeout, 404): render once in
+        # headless Chromium for ANY site instead of saving Untitled.
         rendered = fetch_with_browser(url, site)
         if rendered.get("title"):
             return rendered
+        return blank
+
+    title, company, location, desc, shell = _parse_html(soup, site)
+    if not title or shell:
+        # Empty fast path, or LinkedIn answered with its anonymous shell
+        # ("<Company> hiring <Title> in ..."): render once in headless
+        # Chromium for the real posting.
+        rendered = fetch_with_browser(url, site)
+        if rendered.get("title"):
+            if shell and not rendered.get("company") and company:
+                rendered["company"] = company
+            return rendered
     return {"title": title[:500] if title else "",
-            "company": company[:300] if company else "",
+            "company": company[:300],
             "location": (location[:300] if location else None),
             "description": desc,
             "site": site,

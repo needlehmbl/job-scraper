@@ -134,12 +134,14 @@ def manual_add(body: ManualAddRequest):
             conn.commit()
             return {"moved": True, "job": result}
 
-        # Fingerprint fallback: same listing, different URL.
+        # Fingerprint fallback: same listing, different URL. Placeholder
+        # titles ("Untitled (manual)") are skipped: two unfetched rows that
+        # happen to share a company are not the same listing.
         try:
             import dedupe as dedupe_mod
 
             fp = dedupe_mod.fingerprint(title, company)
-            if fp and company:
+            if fp and company and not mf.is_placeholder_title(title):
                 cur.execute("SELECT id, title, company, status, stage FROM jobs")
                 for cid, ctitle, ccompany, cstatus, cstage in cur.fetchall():
                     if dedupe_mod.fingerprint(ctitle, ccompany) == fp:
@@ -400,9 +402,34 @@ def update_details(job_id: int, body: JobDetailsUpdate):
     if "location" in cleaned and cleaned["location"] == "":
         cleaned["location"] = None
     with db.connect() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id FROM jobs WHERE id = %s", (job_id,))
-        if not cur.fetchone():
+        cur.execute("SELECT id, title, company FROM jobs WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+        if not row:
             raise HTTPException(status_code=404, detail="job not found")
+        # Duplicate guard: editing title/company onto another tracked row's
+        # fingerprint would silently create a cross-link duplicate. Reject
+        # with the conflicting row's id so the user can merge deliberately.
+        try:
+            import dedupe as dedupe_mod
+
+            new_title = cleaned.get("title", row[1])
+            new_company = cleaned.get("company", row[2])
+            fp = dedupe_mod.fingerprint(new_title, new_company)
+            if fp:
+                cur.execute(
+                    "SELECT id, title, company FROM jobs WHERE id <> %s",
+                    (job_id,))
+                for cid, ctitle, ccompany in cur.fetchall():
+                    if dedupe_mod.fingerprint(ctitle, ccompany) == fp:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=(f"title+company matches existing job #{cid} "
+                                    f"({ctitle} @ {ccompany}) — edit would "
+                                    f"create a duplicate"))
+        except HTTPException:
+            raise
+        except Exception:
+            pass
         set_clause = ", ".join(f"{k} = %s" for k in cleaned)
         cur.execute(
             f"UPDATE jobs SET {set_clause} WHERE id = %s RETURNING *",
