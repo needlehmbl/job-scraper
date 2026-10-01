@@ -101,8 +101,8 @@ def test_manual_add_typed_fields_dedupe_move(monkeypatch):
         (("id", "status", "stage"), []),                                  # URL miss
         (("id", "title", "company", "status", "stage"),
          [(9, "Junior Dev", "Acme", "SAVED", None)]),                    # fp scan
-        (("title", "company", "location", "description"),
-         [("Junior Dev", "Acme", None, None)]),                          # backfill
+        (("title", "company", "location", "description", "salary_display"),
+         [("Junior Dev", "Acme", None, None, None)]),                   # backfill
         (("id", "title", "company", "location"),
          [(9, "Junior Dev", "Acme", "Makati")]),                         # final row
     ]

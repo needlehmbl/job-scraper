@@ -147,10 +147,49 @@ def upsert_job(row: dict, conn=None) -> bool:
         return True
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
+        _heal_existing(url, row, conn)
         return False
     finally:
         if own:
             conn.close()
+
+
+def _heal_existing(url: str, row: dict, conn) -> None:
+    """Fill empty description/salary on an already-tracked URL.
+
+    Re-scraped postings carry data the original scrape dropped (salary
+    capture + description fetch postdate the Sep 16-29 rows). Only empty
+    columns are touched -- status/stage/score/user edits never change.
+    Never raises: healing must not break a scrape.
+    """
+    try:
+        sets, vals = [], []
+        if (row.get("description") or "").strip():
+            sets.append(
+                "description = CASE WHEN description IS NULL OR "
+                "description = '' THEN %s ELSE description END")
+            vals.append(row["description"][:8000])
+        if (row.get("salary_display") or "").strip():
+            for col in ("salary_raw", "salary_currency", "salary_min",
+                        "salary_max", "salary_interval",
+                        "salary_monthly_min", "salary_monthly_max",
+                        "salary_display"):
+                sets.append(
+                    f"{col} = CASE WHEN salary_display IS NULL OR "
+                    f"salary_display = '' THEN %s ELSE {col} END")
+                vals.append(row.get(col))
+        if not sets:
+            return
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE jobs SET {', '.join(sets)} WHERE url = %s",
+                (*vals, url))
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 def record_run(started_at, finished_at, new_jobs_count, summary, conn=None) -> int:

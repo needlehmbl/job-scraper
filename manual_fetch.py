@@ -122,6 +122,68 @@ _DESC_SELECTORS = {
     "default": ["article", "main"],
 }
 
+# Salary hooks per site, first hit wins. Only well-known automation attrs
+# here -- anything else comes from the guarded description snippet below
+# (salary_snippet) or schema.org baseSalary, never raw guesswork.
+_SALARY_SELECTORS = {
+    "jobstreet": ["[data-automation='jobSalary']"],
+    "default": [],
+}
+
+# A sentence carries pay only when it names money AND an amount.
+_SALARY_SENT_RE = re.compile(
+    r"(₱|PHP|\$|€|£|¥|₹|\b(?:USD|EUR|GBP|JPY|INR|AUD|CAD|SGD)\b)")
+
+# First currency-anchored amount: the snippet is windowed around this so
+# nav chrome ("Home Browse jobs ...") and trailers ("Free with email ...")
+# don't pollute the raw text.
+_ANCHORED_AMT_RE = re.compile(
+    r"(?:₱|PHP|\$|€|£|¥|₹)\s*[\d][\d,]*(?:\.\d+)?", re.IGNORECASE)
+
+
+def salary_snippet(desc: str, limit: int = 300) -> str:
+    """Pay-bearing slice of a description, validated by the parser.
+
+    Returns "" unless the slice re-parses to a currency + amounts, so
+    "3-5 years experience" next to a "competitive salary" mention never
+    becomes a phantom range.
+    """
+    if not desc:
+        return ""
+    m = _ANCHORED_AMT_RE.search(desc)
+    if m:
+        s = max(0, m.start() - 150)
+        e = min(len(desc), m.end() + 150)
+        while s > 0 and not desc[s].isspace():
+            s -= 1
+        while e < len(desc) and not desc[e].isspace():
+            e += 1
+        out = " ".join(desc[s:e].split())[:limit].strip()
+    else:
+        sents = re.split(r"(?<=[.!?\n;•·])\s+", desc)
+        hits = [s.strip() for s in sents
+                if _SALARY_SENT_RE.search(s) and re.search(r"\d", s)]
+        out = " ".join(hits)[:limit].strip()
+    if not out:
+        return ""
+    try:
+        from salary import parse_salary_text
+        p = parse_salary_text(out)
+    except Exception:
+        return ""
+    if p.get("currency") and p.get("min") is not None:
+        return out
+    return ""
+
+
+def extract_salary_raw(soup, site: str, desc: str | None = None) -> str:
+    """Salary text for one posting page: selector hit, else snippet."""
+    for sel in _SALARY_SELECTORS.get(site, _SALARY_SELECTORS["default"]):
+        t = _text(soup, sel)
+        if t:
+            return t[:300]
+    return salary_snippet(desc or "")
+
 # "Solutions Architect Job in Taguig City, Metro Manila - Jobstreet"
 _JOBSTREET_OG_RE = re.compile(
     r"^(?P<title>.+?)\s+Job in\s+(?P<location>.+?)\s*-\s*Jobstreet\s*$",
@@ -234,8 +296,35 @@ def _jobposting_jsonld(page) -> dict:
                         "location": addr.get("addressLocality", "") or
                         (loc.get("name", "") if isinstance(loc, dict) else ""),
                         "description": item.get("description", ""),
+                        "salary_raw": _jsonld_salary(item),
                     }
     return {}
+
+
+def _jsonld_salary(item: dict) -> str:
+    """schema.org baseSalary blob -> short raw string, else ""."""
+    try:
+        sal = item.get("baseSalary")
+        if not isinstance(sal, dict):
+            return ""
+        v = sal.get("value")
+        v = v if isinstance(v, dict) else sal
+        lo, hi = v.get("minValue"), v.get("maxValue")
+        if lo is None and hi is None:
+            single = v.get("value")
+            lo = hi = single if isinstance(single, (int, float)) else None
+        if lo is None and hi is None:
+            return ""
+        cur = (v.get("currency") or sal.get("currency") or "").strip().upper()
+        unit = (v.get("unitText") or sal.get("unitText") or "").strip().lower()
+
+        def fmt(n):
+            return f"{n:,.0f}" if isinstance(n, float) and n.is_integer() \
+                else str(n)
+        rng = fmt(lo) if lo == hi else f"{fmt(lo)}-{fmt(hi)}"
+        return f"{cur} {rng} {unit}".strip()
+    except Exception:
+        return ""
 
 
 def fetch_with_browser(url: str, site: str, timeout_ms: int = 60000) -> dict:
@@ -307,11 +396,19 @@ def fetch_with_browser(url: str, site: str, timeout_ms: int = 60000) -> dict:
                 desc = desc or extra.get("description", "") or og_desc or ""
                 if desc and len(desc) > 8000:
                     desc = desc[:8000]
+                salary_raw = (
+                    _pick_first(
+                        page, _SALARY_SELECTORS.get(
+                            site, _SALARY_SELECTORS["default"]))
+                    or salary_snippet(desc)
+                    or extra.get("salary_raw", "")
+                )
                 if not title:
                     return {}
                 return {"title": title[:500], "company": company[:300],
                         "location": (location[:300] if location else None),
                         "description": desc or None,
+                        "salary_raw": salary_raw or "",
                         "site": site, "fetch_limited": False}
             finally:
                 try:
@@ -412,7 +509,7 @@ def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
                    if site in _BROWSER_HOSTS else "")
     blank = {"title": "", "company": "", "location": None,
              "description": None, "site": site, "fetch_limited": True,
-             "fetch_note": walled_note}
+             "fetch_note": walled_note, "salary_raw": ""}
     soup = None
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
@@ -442,6 +539,7 @@ def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
             "company": company[:300],
             "location": (location[:300] if location else None),
             "description": desc,
+            "salary_raw": extract_salary_raw(soup, site, desc or ""),
             "site": site,
             "fetch_limited": not bool(title)}
 PLACEHOLDER_TITLES = frozenset({"untitled (manual)", "untitled", ""})

@@ -88,6 +88,13 @@ def _parse_number(tok: str) -> float | None:
         return None
 
 
+# Posting age ("5 days ago", "1 day ago") is never a pay cadence --
+# strip it before interval/amount parsing so it can't win "daily".
+_AGE_RE = re.compile(
+    r"\b\d+\s+(seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b",
+    re.IGNORECASE)
+
+
 def parse_salary_text(text: str) -> dict:
     """Parse a raw salary string into min/max/currency/interval.
 
@@ -101,12 +108,13 @@ def parse_salary_text(text: str) -> dict:
              "interval": "unknown"}
     if not raw:
         return empty
-    low = raw.lower()
+    text = _AGE_RE.sub("", raw)
+    low = text.lower()
     # explicit pay-signal check:
     has_pay_signal = (
-        any(sym in raw for sym in CURRENCY_SYMBOLS)
+        any(sym in text for sym in CURRENCY_SYMBOLS)
         or re.search(r"\b(PHP|USD|EUR|GBP|JPY|INR|AUD|CAD|SGD)\b",
-                     raw, re.IGNORECASE) is not None
+                     text, re.IGNORECASE) is not None
         or any(w in low for w in ("salary", "salar", "pay", "wage",
                                   "compensation", "remuneration",
                                   "per hour", "per day", "per week",
@@ -117,8 +125,8 @@ def parse_salary_text(text: str) -> dict:
     )
     if not has_pay_signal:
         return empty
-    currency = detect_currency(raw)
-    interval = detect_interval(raw)
+    currency = detect_currency(text)
+    interval = detect_interval(text)
     # Amounts anchored to a currency marker ("₱27,000", "Php19,000 -
     # Php27,000") win over any stray numbers elsewhere in the text.
     # Magnitude suffix (k/m) counts only when directly attached to the
@@ -126,7 +134,7 @@ def parse_salary_text(text: str) -> dict:
     # Monthly") is NOT a multiplier.
     anchored = re.findall(
         r"(?:₱|PHP|\$|€|£|¥|₹)\s*([\d][\d,]*(?:\.\d+)?[kKmM]?)(?![\w])",
-        raw, re.IGNORECASE)
+        text, re.IGNORECASE)
     vals = []
     for n in anchored:
         v = _parse_number(n)
@@ -138,14 +146,14 @@ def parse_salary_text(text: str) -> dict:
         m = re.search(
             r"([\d][\d,]*(?:\.\d+)?[kKmM]?)(?![\w])\s*(?:–|—|-|to)\s*"
             r"([\d][\d,]*(?:\.\d+)?[kKmM]?)(?![\w])",
-            raw, re.IGNORECASE)
+            text, re.IGNORECASE)
         if m:
             for g in m.groups():
                 v = _parse_number(g)
                 if v is not None:
                     vals.append(v)
         else:
-            m = re.search(r"([\d][\d,]*(?:\.\d+)?[kKmM]?)(?![\w])", raw)
+            m = re.search(r"([\d][\d,]*(?:\.\d+)?[kKmM]?)(?![\w])", text)
             if m:
                 v = _parse_number(m.group(1))
                 if v is not None:

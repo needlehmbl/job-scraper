@@ -74,6 +74,15 @@ def manual_add(body: ManualAddRequest):
     # one stuck manual-add (idle-in-transaction lock pile-up).
     fetched = mf.fetch_job_from_url(url)
     fields = mf.resolve_manual_fields(fetched, override)
+    try:
+        from salary import normalize_job_salary as _norm_sal
+        sal = _norm_sal({"salary_raw": fetched.get("salary_raw") or "",
+                         "site": fetched.get("site") or "manual"})
+    except Exception:
+        sal = {"salary_raw": "", "salary_currency": "", "salary_min": None,
+               "salary_max": None, "salary_interval": "unknown",
+               "salary_monthly_min": None, "salary_monthly_max": None,
+               "salary_display": ""}
     title = fields["title"]
     company = fields["company"]
     site = fetched.get("site") or "manual"
@@ -94,16 +103,16 @@ def manual_add(body: ManualAddRequest):
 
             Re-pasting an Untitled row with typed (or newly fetched)
             values fixes it in place instead of preserving the placeholder.
-            Only placeholder title / empty company/location/description
-            are touched; real stored values are never overwritten.
+            Only placeholder title / empty company/location/description/
+            salary are touched; real stored values are never overwritten.
             """
             cur.execute(
-                "SELECT title, company, location, description FROM jobs "
-                "WHERE id = %s", (job_id,))
+                "SELECT title, company, location, description, salary_display "
+                "FROM jobs WHERE id = %s", (job_id,))
             row = cur.fetchone()
             if not row:
                 return
-            old_title, old_company, old_loc, old_desc = row
+            old_title, old_company, old_loc, old_desc, old_sal = row
             sets, vals = [], []
             if mf.is_placeholder_title(old_title) and not mf.is_placeholder_title(
                     fields.get("title", "")):
@@ -118,6 +127,13 @@ def manual_add(body: ManualAddRequest):
             if not (old_desc or "").strip() and (fields.get("description") or "").strip():
                 sets.append("description = %s")
                 vals.append(fields["description"][:8000])
+            if not (old_sal or "").strip() and (fields.get("salary_display") or "").strip():
+                for col in ("salary_raw", "salary_currency", "salary_min",
+                            "salary_max", "salary_interval",
+                            "salary_monthly_min", "salary_monthly_max",
+                            "salary_display"):
+                    sets.append(f"{col} = %s")
+                    vals.append(fields.get(col))
             if sets:
                 cur.execute(
                     f"UPDATE jobs SET {', '.join(sets)} WHERE id = %s",
@@ -127,7 +143,8 @@ def manual_add(body: ManualAddRequest):
             jid, old_status, old_stage = hit[0], hit[1], hit[2]
             result = _move_to_applied(cur, jid, old_status, old_stage)
             backfill_placeholders(jid, {**fields,
-                                        "description": fetched.get("description")})
+                                        "description": fetched.get("description"),
+                                        **sal})
             cur.execute("SELECT * FROM jobs WHERE id = %s", (jid,))
             row = cur.fetchone()
             result = dict(zip([d.name for d in cur.description], row))
@@ -146,7 +163,7 @@ def manual_add(body: ManualAddRequest):
                 for cid, ctitle, ccompany, cstatus, cstage in cur.fetchall():
                     if dedupe_mod.fingerprint(ctitle, ccompany) == fp:
                         result = _move_to_applied(cur, cid, cstatus, cstage)
-                        backfill_placeholders(cid, {**fields, "description": fetched.get("description")})
+                        backfill_placeholders(cid, {**fields, "description": fetched.get("description"), **sal})
                         cur.execute("SELECT * FROM jobs WHERE id = %s", (cid,))
                         frow = cur.fetchone()
                         result = dict(zip([d.name for d in cur.description], frow))
@@ -162,15 +179,22 @@ def manual_add(body: ManualAddRequest):
             INSERT INTO jobs (source, title, company, url, location,
                               date_posted, status, applied_at,
                               status_updated_at, stage, score, score_reason,
-                              description)
+                              description, salary_raw, salary_currency,
+                              salary_min, salary_max, salary_interval,
+                              salary_monthly_min, salary_monthly_max,
+                              salary_display)
             VALUES (%s, %s, %s, %s, %s, NULL, 'APPLIED', %s, %s,
-                    'APPLIED', %s, %s, %s)
+                    'APPLIED', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (url) DO NOTHING
             RETURNING *
             """,
             (site, title, company, url, fields.get("location"),
              now, now, f_score or 0, f_reason or "",
-             fetched.get("description")),
+             fetched.get("description"), sal.get("salary_raw") or "",
+             sal.get("salary_currency") or "", sal.get("salary_min"),
+             sal.get("salary_max"), sal.get("salary_interval") or "unknown",
+             sal.get("salary_monthly_min"), sal.get("salary_monthly_max"),
+             sal.get("salary_display") or ""),
         )
         row = cur.fetchone()
         if row is None:  # lost a race with a concurrent insert; move it
