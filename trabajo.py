@@ -138,7 +138,7 @@ def parse_cards(html: str) -> list[dict]:
                 location = txt
             elif not company:
                 company = txt
-        desc_el = li.select_one("p.mb-0")
+        desc_el = li.select_one(".nf-job-list-desc p.mb-0")
         desc = desc_el.get_text(" ", strip=True) if desc_el else ""
         if (company and location and _is_location_span(company)
                 and not _is_location_span(location)):

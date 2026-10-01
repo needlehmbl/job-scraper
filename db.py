@@ -147,27 +147,37 @@ def upsert_job(row: dict, conn=None) -> bool:
         return True
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
-        _heal_existing(url, row, conn)
+        heal_existing(url, row, conn)
         return False
     finally:
         if own:
             conn.close()
 
 
-def _heal_existing(url: str, row: dict, conn) -> None:
-    """Fill empty description/salary on an already-tracked URL.
+def heal_existing(url: str, row: dict, conn=None, job_id=None) -> None:
+    """Fill empty description/salary on an already-tracked posting.
 
     Re-scraped postings carry data the original scrape dropped (salary
     capture + description fetch postdate the Sep 16-29 rows). Only empty
     columns are touched -- status/stage/score/user edits never change.
-    Never raises: healing must not break a scrape.
+    Age-only descriptions ("1 day ago") from the broken trabajo selector
+    count as empty so re-scrapes overwrite the garbage.
+    Matches by jobs.id when job_id is given (reposts often arrive under a
+    new URL), otherwise by exact url. Never raises: healing must not
+    break a scrape.
     """
+    own = conn is None
+    if own:
+        conn = connect()
     try:
         sets, vals = [], []
         if (row.get("description") or "").strip():
             sets.append(
                 "description = CASE WHEN description IS NULL OR "
-                "description = '' THEN %s ELSE description END")
+                "description = '' OR description ~* "
+                "'^\\s*[0-9]+\\s*(seconds?|minutes?|hours?|days?|weeks?|"
+                "months?|years?)\\s+ago\\s*$' "
+                "THEN %s ELSE description END")
             vals.append(row["description"][:8000])
         if (row.get("salary_display") or "").strip():
             for col in ("salary_raw", "salary_currency", "salary_min",
@@ -181,15 +191,30 @@ def _heal_existing(url: str, row: dict, conn) -> None:
         if not sets:
             return
         with conn.cursor() as cur:
-            cur.execute(
-                f"UPDATE jobs SET {', '.join(sets)} WHERE url = %s",
-                (*vals, url))
+            if job_id is not None:
+                cur.execute(
+                    f"UPDATE jobs SET {', '.join(sets)} WHERE id = %s",
+                    (*vals, job_id))
+            else:
+                cur.execute(
+                    f"UPDATE jobs SET {', '.join(sets)} WHERE url = %s",
+                    (*vals, url))
         conn.commit()
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
+    finally:
+        if own:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# Backwards-compatible alias for the pre-public name.
+_heal_existing = heal_existing
 
 
 def record_run(started_at, finished_at, new_jobs_count, summary, conn=None) -> int:

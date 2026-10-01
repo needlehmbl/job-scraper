@@ -11,6 +11,7 @@ Normalized output keys (used for DB + API + dashboard):
   salary_interval (hourly/daily/weekly/monthly/yearly/unknown),
   salary_monthly_min, salary_monthly_max, salary_display
 """
+import math
 import re
 
 CURRENCY_SYMBOLS = {
@@ -48,10 +49,9 @@ _WEEKS_PER_MONTH = 52.0 / 12.0
 
 def detect_interval(text: str) -> str:
     low = (text or "").lower()
-    for tier in (_INTERVAL_STRONG, _INTERVAL_WEAK):
-        for interval, patterns in tier.items():
-            if any(re.search(p, low) for p in patterns):
-                return interval
+    for interval, patterns in _INTERVAL_STRONG.items():
+        if any(re.search(p, low) for p in patterns):
+            return interval
     return "unknown"
 
 
@@ -88,8 +88,16 @@ def _parse_number(tok: str) -> float | None:
         return None
 
 
-# Posting age ("5 days ago", "1 day ago") is never a pay cadence --
-# strip it before interval/amount parsing so it can't win "daily".
+# Experience requirements ("3-5 years experience", "3–5 YOE") are never a
+# pay cadence -- strip them before interval parsing so "years" can't win
+# a weak yearly match next to a real amount.
+_EXP_RE = re.compile(
+    r"\b\d{1,2}\s*(?:[-–—to]+\s*\d{1,2}\s*)?\+?\s*"
+    r"(?:years?['’]?|yrs?|y\.?o\.?e\.?)(?![A-Za-z])"
+    r"(?:\s+[\w-]+){0,4}\s+(?:experience|exp\b|exposure)\b"
+    r"|\bexperience\s*[:\-]?\s*(?:of|with|for|in)?\s*\d{1,2}\b\s*\+?\s*"
+    r"(?:years?['’]?|yrs?|y\.?o\.?e\.?)(?![A-Za-z])",
+    re.IGNORECASE)
 _AGE_RE = re.compile(
     r"\b\d+\s+(seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago\b",
     re.IGNORECASE)
@@ -109,6 +117,7 @@ def parse_salary_text(text: str) -> dict:
     if not raw:
         return empty
     text = _AGE_RE.sub("", raw)
+    text = _EXP_RE.sub("", text)
     low = text.lower()
     # explicit pay-signal check:
     has_pay_signal = (
@@ -227,6 +236,30 @@ def format_salary(currency: str, lo: float | None, hi: float | None,
     return f"{base}{suffix}"
 
 
+def _safe_str(v) -> str:
+    """Coerce scraper values (incl. pandas NaN) to a stripped string."""
+    if v is None:
+        return ""
+    if isinstance(v, float) and math.isnan(v):
+        return ""
+    try:
+        # pandas NaT and other non-str scalars
+        import pandas as pd
+        if v is pd.NaT:
+            return ""
+    except Exception:
+        pass
+    return str(v).strip()
+
+
+def _is_empty_val(v) -> bool:
+    if v is None or v == "":
+        return True
+    if isinstance(v, float) and math.isnan(v):
+        return True
+    return False
+
+
 def normalize_job_salary(job: dict) -> dict:
     """Accept a scraper row (many shapes) -> normalized salary dict.
 
@@ -234,38 +267,65 @@ def normalize_job_salary(job: dict) -> dict:
     - {"salary_raw": "..."} (trabajo / jobstreet new path)
     - {"salary": "..."} (jobstreet legacy key)
     - jobspy: min_amount/max_amount/interval/currency (also compensation dict)
+    - embedded pay in {"description": "..."} (LinkedIn/Indeed postings that
+      state "**Salary:** ₱110k–₱150k" with no structured amount columns)
     """
-    raw = (job.get("salary_raw") or job.get("salary") or "").strip()
-    currency = (job.get("currency") or job.get("salary_currency") or "").strip().upper()
+    raw = _safe_str(job.get("salary_raw")) or _safe_str(job.get("salary"))
+    currency = (_safe_str(job.get("currency")) or _safe_str(job.get("salary_currency"))).upper()
     lo = job.get("salary_min", job.get("min_amount"))
     hi = job.get("salary_max", job.get("max_amount"))
-    interval = (job.get("salary_interval") or job.get("interval") or "").strip().lower()
+    interval = (_safe_str(job.get("salary_interval")) or _safe_str(job.get("interval"))).lower()
 
     comp = job.get("compensation")
     if isinstance(comp, dict):
-        lo = lo if lo not in (None, "") else comp.get("min_amount")
-        hi = hi if hi not in (None, "") else comp.get("max_amount")
-        interval = interval or str(comp.get("interval") or "").lower()
-        currency = currency or str(comp.get("currency") or "").upper()
+        lo = lo if not _is_empty_val(lo) else comp.get("min_amount")
+        hi = hi if not _is_empty_val(hi) else comp.get("max_amount")
+        interval = interval or _safe_str(comp.get("interval")).lower()
+        currency = currency or _safe_str(comp.get("currency")).upper()
+
+    if not raw:
+        # Embedded pay fallback: postings (notably LinkedIn/Indeed via
+        # jobspy) often state the range in the description with no
+        # structured amount columns. Reuse manual_fetch's validated
+        # snippet so "3-5 years experience" can't become a phantom range.
+        desc = _safe_str(job.get("description"))
+        if desc:
+            try:
+                from manual_fetch import salary_snippet as _snippet
+                snippet = _snippet(desc)
+            except Exception:
+                snippet = ""
+                try:
+                    parsed_desc = parse_salary_text(desc[:2000])
+                    if parsed_desc.get("currency") and parsed_desc.get("min") is not None:
+                        snippet = desc[:300]
+                except Exception:
+                    snippet = ""
+            if snippet:
+                raw = snippet[:300]
 
     if raw:
         parsed = parse_salary_text(raw)
         currency = currency or parsed["currency"]
-        if lo in (None, ""):
+        if _is_empty_val(lo):
             lo = parsed["min"]
-        if hi in (None, ""):
+        if _is_empty_val(hi):
             hi = parsed["max"]
         if not interval or interval == "unknown":
             interval = parsed["interval"]
     else:
         # jobspy-only shape: synthesize raw for audit trail
-        if lo is not None or hi is not None:
+        if not _is_empty_val(lo) or not _is_empty_val(hi):
             try:
-                lof = float(lo) if lo not in (None, "") else None
+                lof = None if _is_empty_val(lo) else float(lo)
+                if lof is not None and isinstance(lof, float) and math.isnan(lof):
+                    lof = None
             except (TypeError, ValueError):
                 lof = None
             try:
-                hif = float(hi) if hi not in (None, "") else None
+                hif = None if _is_empty_val(hi) else float(hi)
+                if hif is not None and isinstance(hif, float) and math.isnan(hif):
+                    hif = None
             except (TypeError, ValueError):
                 hif = None
             lo, hi = lof, hif
@@ -273,10 +333,12 @@ def normalize_job_salary(job: dict) -> dict:
             raw = ""
 
     def _num(v):
-        if v is None or v == "":
+        if _is_empty_val(v):
             return None
         try:
             f = float(v)
+            if isinstance(f, float) and math.isnan(f):
+                return None
             return f
         except (TypeError, ValueError):
             return None
@@ -288,7 +350,7 @@ def normalize_job_salary(job: dict) -> dict:
         interval = "unknown"
     # trabajo heuristic: large round PHP figures with no explicit interval
     # are usually yearly listings -> mark yearly so the monthly estimate shows.
-    src = str(job.get("site") or job.get("source") or "").lower()
+    src = (_safe_str(job.get("site")) or _safe_str(job.get("source"))).lower()
     if interval == "unknown" and currency == "PHP" and lo is not None \
             and lo >= 200_000 and ("trabajo" in src or "trabajo" in raw.lower()):
         interval = "yearly"

@@ -208,7 +208,11 @@ def run_scrape() -> dict:
         fp = dedupe_mod.row_fingerprint(row)
         if fp and fp in known_fps:
             try:
-                db.touch_last_seen(known_fps[fp]["id"])
+                _id = known_fps[fp]["id"]
+                db.touch_last_seen(_id)
+                # Re-scraped repost may carry description/salary the
+                # stored row lacks (heal fills only empty columns).
+                db.heal_existing(row.get("url", ""), row, job_id=_id)
             except Exception as e:
                 print(f"[pipeline] WARNING: could not touch last_seen: {e}")
             dup_fp += 1
@@ -217,6 +221,8 @@ def run_scrape() -> dict:
         if existing is not None:
             try:
                 db.touch_last_seen(existing["id"])
+                db.heal_existing(row.get("url", ""), row,
+                                 job_id=existing["id"])
             except Exception as e:
                 print(f"[pipeline] WARNING: could not touch last_seen: {e}")
             if fp:

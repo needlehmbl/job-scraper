@@ -30,6 +30,7 @@ class Job(BaseModel):
     url: str
     location: str | None = None
     date_posted: date | None = None
+    description: str | None = None
     status: str
     scraped_at: datetime
     last_seen: datetime | None = None
