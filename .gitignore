@@ -11,6 +11,8 @@ __pycache__/
 applications.xlsx
 runs.log
 raw_jobs.csv
+jobs.db
+*.db
 .notify_state.json
 resumes/
 resume_bank.yaml
