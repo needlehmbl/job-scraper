@@ -67,6 +67,14 @@ def _jrow(job, bank_low=None, _score_fn=None) -> dict:
         dpost = None
     elif isinstance(dpost, str) and not dpost.strip():
         dpost = None  # dateless rows (Glassdoor cards, board list rows) -> NULL, not ''
+    try:
+        from salary import normalize_job_salary as _norm_sal
+        sal = _norm_sal(dict(job))
+    except Exception:
+        sal = {"salary_raw": "", "salary_currency": "", "salary_min": None,
+               "salary_max": None, "salary_interval": "unknown",
+               "salary_monthly_min": None, "salary_monthly_max": None,
+               "salary_display": ""}
     row = {
         "source": _source(job),
         "title": _clean(job.get("title", "")),
@@ -78,6 +86,7 @@ def _jrow(job, bank_low=None, _score_fn=None) -> dict:
         # Stored for the learner's desc-skill patterns (capped: some
         # boards return very long HTML-stripped text).
         "description": _clean(job.get("description", ""))[:20000] or "",
+        **sal,
     }
     try:
         import score as score_mod

@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from api import db
 from api.models import (FollowUpUpdate, HistoryEntry, Job, JobDetailsUpdate,
                          JobStatusUpdate, ManualAddRequest, OfferUpdate,
-                         StageUpdate)
+                         SalaryUpdate, StageUpdate)
 
 router = APIRouter()
 
@@ -457,6 +457,77 @@ def update_offer(job_id: int, body: OfferUpdate):
         cur.execute(
             f"UPDATE jobs SET {set_clause} WHERE id = %s RETURNING *",
             (*updates.values(), job_id),
+        )
+        row = cur.fetchone()
+        cols = [d.name for d in cur.description]
+        result = dict(zip(cols, row))
+        conn.commit()
+        return result
+
+
+@router.patch("/{job_id}/salary", response_model=Job)
+def update_salary(job_id: int, body: SalaryUpdate):
+    """Correct the scraped salary (Jobs modal + Applied tab).
+
+    salary_raw is re-parsed server-side; explicit min/max/interval/currency
+    override the parse so a user can type "45000" + monthly without the raw
+    text. Blank raw + no overrides clears the salary.
+    """
+    payload = body.model_dump()
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+        cols0 = [d.name for d in cur.description]
+        currow = cur.fetchone()
+        if not currow:
+            raise HTTPException(status_code=404, detail="job not found")
+        current = dict(zip(cols0, currow))
+        raw = payload.get("salary_raw")
+        if raw is None:
+            raw = current.get("salary_raw") or ""
+        try:
+            from salary import normalize_job_salary as _norm_sal
+            base = {"site": current.get("source") or "",
+                    "salary_raw": (raw or "").strip()}
+            sal = _norm_sal(base)
+        except Exception:
+            sal = {"salary_raw": (raw or "").strip(), "salary_currency": "",
+                   "salary_min": None, "salary_max": None,
+                   "salary_interval": "unknown",
+                   "salary_monthly_min": None, "salary_monthly_max": None,
+                   "salary_display": ""}
+        for key in ("salary_currency", "salary_min", "salary_max",
+                    "salary_interval"):
+            if payload.get(key) is not None:
+                sal[key] = payload[key]
+        # re-derive monthly + display after overrides
+        try:
+            from salary import to_monthly as _to_m, format_salary as _fmt
+            sal["salary_currency"] = (sal.get("salary_currency") or "").upper()
+            sal["salary_interval"] = (sal.get("salary_interval") or "unknown").lower()
+            sal["salary_monthly_min"] = _to_m(sal.get("salary_min"),
+                                              sal["salary_interval"])
+            sal["salary_monthly_max"] = _to_m(sal.get("salary_max"),
+                                              sal["salary_interval"])
+            sal["salary_display"] = _fmt(sal["salary_currency"],
+                                         sal.get("salary_min"),
+                                         sal.get("salary_max"),
+                                         sal["salary_interval"],
+                                         sal["salary_monthly_min"],
+                                         sal["salary_monthly_max"])
+        except Exception:
+            pass
+        # clearing: blank raw + no numbers -> empty display
+        if not (sal["salary_raw"] or "") and sal["salary_min"] is None \
+                and sal["salary_max"] is None:
+            sal = {"salary_raw": "", "salary_currency": "",
+                   "salary_min": None, "salary_max": None,
+                   "salary_interval": "unknown",
+                   "salary_monthly_min": None,
+                   "salary_monthly_max": None, "salary_display": ""}
+        set_clause = ", ".join(f"{k} = %s" for k in sal)
+        cur.execute(
+            f"UPDATE jobs SET {set_clause} WHERE id = %s RETURNING *",
+            (*sal.values(), job_id),
         )
         row = cur.fetchone()
         cols = [d.name for d in cur.description]

@@ -138,6 +138,30 @@ function isFollowupDue(job) {
   return String(job.follow_up_at).slice(0, 10) <= new Date().toISOString().slice(0, 10)
 }
 
+// Posted salary (scraped range, normalized monthly). Currency always shown
+// when known; the title tooltip carries raw text + interval so a yearly
+// trabajo figure is never mistaken for monthly.
+function fmtSalary(job) {
+  if (!job) return '—'
+  if (job.salary_display) return job.salary_display
+  if (job.salary_raw) return job.salary_raw
+  return '—'
+}
+
+function salaryTitle(job) {
+  if (!job || (!job.salary_raw && !job.salary_display)) return 'No salary captured'
+  const parts = []
+  if (job.salary_display) parts.push(`Display: ${job.salary_display}`)
+  if (job.salary_raw) parts.push(`Raw: ${job.salary_raw}`)
+  parts.push(`Interval: ${job.salary_interval || 'unknown'}`)
+  if (job.salary_monthly_min || job.salary_monthly_max) {
+    const f = (v) => (v == null ? '—' : Math.round(v).toLocaleString())
+    parts.push(`Monthly est: ${f(job.salary_monthly_min)}–${f(job.salary_monthly_max)}`)
+  }
+  if (job.salary_currency) parts.push(`Currency: ${job.salary_currency}`)
+  return parts.join('\n')
+}
+
 function Highlight({ text, query }) {
   const terms = (Array.isArray(query) ? query : [query])
     .map((q) => (q || '').trim().toLowerCase())
@@ -312,6 +336,8 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
   const [benefits, setBenefits] = useState(job.offer_benefits || '')
   const [pros, setPros] = useState(job.offer_pros || '')
   const [cons, setCons] = useState(job.offer_cons || '')
+  const [postedSalaryRaw, setPostedSalaryRaw] = useState(job.salary_raw || '')
+  const [postedSalaryNote, setPostedSalaryNote] = useState('')
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [editing, setEditing] = useState(false)
@@ -330,13 +356,15 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
     setBenefits(job.offer_benefits || '')
     setPros(job.offer_pros || '')
     setCons(job.offer_cons || '')
+    setPostedSalaryRaw(job.salary_raw || '')
+    setPostedSalaryNote('')
     if (!editing) {
       setEditTitle(job.title || '')
       setEditCompany(job.company || '')
       setEditLocation(job.location || '')
     }
   }, [job.offer_salary, job.offer_benefits, job.offer_pros, job.offer_cons,
-    job.title, job.company, job.location, editing])
+    job.salary_raw, job.title, job.company, job.location, editing])
 
   const loadHistory = useCallback(async () => {
     if (history !== null) return
@@ -380,6 +408,25 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
     }
     setSaving(false)
   }, [job.id, onChanged])
+
+  const savePostedSalary = useCallback(async () => {
+    setSaving(true)
+    setPostedSalaryNote('')
+    try {
+      const r = await fetch(`${API}/jobs/${job.id}/salary`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ salary_raw: postedSalaryRaw }),
+      })
+      if (!r.ok) throw new Error(`save failed (${r.status})`)
+      setPostedSalaryNote('Saved.')
+      await onChanged()
+    } catch (e) {
+      console.error('posted salary save failed:', e)
+      setPostedSalaryNote(`Save failed: ${e.message}`)
+    }
+    setSaving(false)
+  }, [job.id, postedSalaryRaw, onChanged])
 
   const saveDetails = useCallback(async () => {
     const patch = {}
@@ -430,6 +477,11 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
           )}
           {isOffer && job.offer_salary && (
             <span className="block text-xs text-neutral-500 dark:text-neutral-400">{job.offer_salary}</span>
+          )}
+          {(job.salary_display || job.salary_raw) && (
+            <span className="block text-xs text-neutral-500 dark:text-neutral-400" title={salaryTitle(job)}>
+              Posted: {fmtSalary(job)}
+            </span>
           )}
         </td>
         <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
@@ -554,6 +606,25 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
                 ))}
               </ol>
             )}
+            <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-700">
+              <h4 className="text-xs font-medium text-neutral-500 dark:text-neutral-400" title={salaryTitle(job)}>
+                Posted salary {(job.salary_display || job.salary_raw) ? `— ${fmtSalary(job)}` : '— none captured'}
+              </h4>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input value={postedSalaryRaw} onChange={(e) => setPostedSalaryRaw(e.target.value)}
+                  placeholder="e.g. ₱42,000-₱60,000 per month"
+                  title="Scraped range — correct it here and it re-parses (currency + monthly estimate)"
+                  className="min-w-52 flex-1 rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+                <button
+                  onClick={savePostedSalary}
+                  disabled={saving}
+                  className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                >
+                  {saving ? 'Saving…' : 'Save salary'}
+                </button>
+                {postedSalaryNote && <span className="text-xs text-neutral-500 dark:text-neutral-400" role="status">{postedSalaryNote}</span>}
+              </div>
+            </div>
             {isOffer && (
               <div className="mt-3 border-t border-neutral-200 pt-3 dark:border-neutral-700">
                 <h4 className="text-xs font-medium text-neutral-500 dark:text-neutral-400">
@@ -679,6 +750,11 @@ export default function App() {
   const [tailorResult, setTailorResult] = useState(null)
   const [tailorLoading, setTailorLoading] = useState(false)
   const [tailorError, setTailorError] = useState('')
+  // More-details modal: salary on top + full posting description.
+  const [detailsJob, setDetailsJob] = useState(null)
+  const [detailsSalaryRaw, setDetailsSalaryRaw] = useState('')
+  const [detailsSalaryNote, setDetailsSalaryNote] = useState('')
+  const [detailsSalarySaving, setDetailsSalarySaving] = useState(false)
   const [manualUrl, setManualUrl] = useState('')
   const [manualOpen, setManualOpen] = useState(false)
   const [manualBusy, setManualBusy] = useState(false)
@@ -2860,6 +2936,9 @@ function describeScrapeProgress(p) {
                     </button>
                   </th>
                   <th className="px-4 py-3 font-medium">Source</th>
+                  <th className="px-4 py-3 font-medium" title="Scraped salary range (currency shown; yearly figures show a monthly estimate)">
+                    Salary
+                  </th>
                   <th className="px-4 py-3 font-medium">
                     <button
                       onClick={cyclePostedSort}
@@ -2930,6 +3009,14 @@ function describeScrapeProgress(p) {
                         {job.source || '—'}
                       </span>
                     </td>
+                    <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400" title={salaryTitle(job)}>
+                      {fmtSalary(job)}
+                      {job.salary_interval && job.salary_interval !== 'unknown' && (job.salary_raw || job.salary_display) && (
+                        <span className="block text-xs text-neutral-400 dark:text-neutral-500">
+                          {job.salary_interval === 'yearly' ? 'per year' : job.salary_interval === 'monthly' ? 'per month' : job.salary_interval}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-neutral-600 dark:text-neutral-400">
                       {fmtDate(job.date_posted)}
                     </td>
@@ -2979,12 +3066,19 @@ function describeScrapeProgress(p) {
                         >
                           Tailor
                         </button>
+                        <button
+                          onClick={() => { setDetailsJob(job); setDetailsSalaryRaw(job.salary_raw || ''); setDetailsSalaryNote('') }}
+                          title="Salary + full posting description"
+                          className="rounded-lg border border-neutral-300 px-3 py-1.5 text-xs font-medium text-neutral-500 hover:bg-neutral-100 dark:border-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                        >
+                          More
+                        </button>
                       </div>
                     </td>
                   </tr>
                   {confirmApplyId === job.id && (
                     <tr className="bg-emerald-50 dark:bg-emerald-950/40">
-                      <td colSpan={9} className="px-4 py-2.5">
+                      <td colSpan={10} className="px-4 py-2.5">
                         <div className="flex flex-wrap items-center gap-2 text-xs">
                           <span className="font-medium text-neutral-700 dark:text-neutral-200">
                             Did you submit the application for “{job.title || 'Untitled'}”?
@@ -3159,6 +3253,11 @@ function describeScrapeProgress(p) {
                       {job.search_term && (
                         <span className="block text-xs text-neutral-400 dark:text-neutral-500">
                           via “{job.search_term}”
+                        </span>
+                      )}
+                      {(job.salary_display || job.salary_raw) && (
+                        <span className="block text-xs text-neutral-500 dark:text-neutral-400" title={salaryTitle(job)}>
+                          {fmtSalary(job)}
                         </span>
                       )}
                       {job.description && (
@@ -3422,6 +3521,98 @@ function describeScrapeProgress(p) {
         </div>
       )}
 
+      {detailsJob && (
+        <div
+          className="fixed inset-0 z-20 flex items-start justify-center overflow-y-auto bg-neutral-900/50 p-4"
+          onClick={() => !detailsSalarySaving && setDetailsJob(null)}
+        >
+          <div
+            className="mt-8 w-full max-w-3xl rounded-xl border border-neutral-200 bg-white p-6 shadow-xl dark:border-neutral-700 dark:bg-neutral-900"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">{detailsJob.title || 'Untitled'}</h2>
+                <p className="text-sm text-neutral-500 dark:text-neutral-400">
+                  {detailsJob.company || '—'} · {detailsJob.source || '—'} · {fmtDate(detailsJob.date_posted)}
+                </p>
+              </div>
+              <button
+                onClick={() => !detailsSalarySaving && setDetailsJob(null)}
+                className="rounded-lg px-2 py-1 text-neutral-500 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4 rounded-lg bg-neutral-50 p-3 dark:bg-neutral-800/60">
+              <h3 className="text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                Salary
+              </h3>
+              <p className="mt-1 text-sm font-medium" title={salaryTitle(detailsJob)}>
+                {fmtSalary(detailsJob)}
+              </p>
+              {(detailsJob.salary_raw || detailsJob.salary_interval) && (
+                <p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
+                  {detailsJob.salary_raw && <>Raw: {detailsJob.salary_raw} · </>}
+                  Interval: {detailsJob.salary_interval || 'unknown'}
+                  {(detailsJob.salary_monthly_min || detailsJob.salary_monthly_max) && (
+                    <> · Monthly est: {Math.round(detailsJob.salary_monthly_min || 0).toLocaleString()}–{Math.round(detailsJob.salary_monthly_max || 0).toLocaleString()}</>
+                  )}
+                  {detailsJob.salary_currency && <> · {detailsJob.salary_currency}</>}
+                </p>
+              )}
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <input value={detailsSalaryRaw} onChange={(e) => setDetailsSalaryRaw(e.target.value)}
+                  placeholder="Correct the scraped range, e.g. ₱42,000-₱60,000 per month"
+                  className="min-w-52 flex-1 rounded-lg border border-neutral-300 bg-white px-2 py-1 text-xs dark:border-neutral-700 dark:bg-neutral-800" />
+                <button
+                  onClick={async () => {
+                    setDetailsSalarySaving(true)
+                    setDetailsSalaryNote('')
+                    try {
+                      const r = await fetch(`${API}/jobs/${detailsJob.id}/salary`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ salary_raw: detailsSalaryRaw }),
+                      })
+                      if (!r.ok) throw new Error(`save failed (${r.status})`)
+                      const updated = await r.json()
+                      setDetailsJob(updated)
+                      setDetailsSalaryNote('Saved.')
+                      await refreshJobs()
+                    } catch (e) {
+                      setDetailsSalaryNote(`Save failed: ${e.message}`)
+                    }
+                    setDetailsSalarySaving(false)
+                  }}
+                  disabled={detailsSalarySaving}
+                  className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+                >
+                  {detailsSalarySaving ? 'Saving…' : 'Save salary'}
+                </button>
+                {detailsSalaryNote && <span className="text-xs text-neutral-500 dark:text-neutral-400" role="status">{detailsSalaryNote}</span>}
+              </div>
+            </div>
+            <details open className="mt-4 text-sm text-neutral-600 dark:text-neutral-400">
+              <summary className="cursor-pointer text-xs font-medium uppercase tracking-wide text-neutral-500 hover:underline dark:text-neutral-400">
+                Posting text
+              </summary>
+              <p className="mt-1 max-h-96 overflow-y-auto whitespace-pre-wrap">
+                {detailsJob.description || 'No description stored for this posting.'}
+              </p>
+            </details>
+            <div className="mt-4 flex justify-end">
+              <a
+                href={detailsJob.url} target="_blank" rel="noreferrer"
+                className="rounded-lg bg-neutral-900 px-4 py-2 text-sm font-medium text-white hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
+              >
+                Open posting
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
       {tailorJob && (
         <div
           className="fixed inset-0 z-20 flex items-start justify-center overflow-y-auto bg-neutral-900/50 p-4"

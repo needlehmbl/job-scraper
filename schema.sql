@@ -21,7 +21,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   offer_salary TEXT NOT NULL DEFAULT '',   -- offer details (Applications tab)
   offer_benefits TEXT NOT NULL DEFAULT '',
   offer_pros TEXT NOT NULL DEFAULT '',
-  offer_cons TEXT NOT NULL DEFAULT ''
+  offer_cons TEXT NOT NULL DEFAULT '',
+  salary_raw TEXT NOT NULL DEFAULT '',      -- scraped salary text (trabajo/jobstreet/jobspy)
+  salary_currency TEXT NOT NULL DEFAULT '', -- PHP/USD/... (shown in Salary column)
+  salary_min DOUBLE PRECISION DEFAULT NULL,
+  salary_max DOUBLE PRECISION DEFAULT NULL,
+  salary_interval TEXT NOT NULL DEFAULT 'unknown', -- hourly/daily/weekly/monthly/yearly/unknown
+  salary_monthly_min DOUBLE PRECISION DEFAULT NULL, -- normalized monthly estimate
+  salary_monthly_max DOUBLE PRECISION DEFAULT NULL,
+  salary_display TEXT NOT NULL DEFAULT ''   -- preformatted "PHP 42k–60k/mo" etc.
 );
 
 -- Stage-change audit trail for pipeline rows (mirrors job_status_history,
@@ -71,7 +79,15 @@ CREATE TABLE IF NOT EXISTS filtered_jobs (
   search_term TEXT,
   filter_reason TEXT NOT NULL DEFAULT '',
   filtered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  restored BOOLEAN NOT NULL DEFAULT FALSE
+  restored BOOLEAN NOT NULL DEFAULT FALSE,
+  salary_raw TEXT NOT NULL DEFAULT '',
+  salary_currency TEXT NOT NULL DEFAULT '',
+  salary_min DOUBLE PRECISION DEFAULT NULL,
+  salary_max DOUBLE PRECISION DEFAULT NULL,
+  salary_interval TEXT NOT NULL DEFAULT 'unknown',
+  salary_monthly_min DOUBLE PRECISION DEFAULT NULL,
+  salary_monthly_max DOUBLE PRECISION DEFAULT NULL,
+  salary_display TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS filtered_jobs_url_idx
   ON filtered_jobs (url) WHERE url <> '';

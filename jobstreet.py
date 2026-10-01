@@ -214,6 +214,7 @@ class JobStreetScraper:
                     "date_posted": _parse_listed(c.get("listed", "")),
                     "job_url": job_url,
                     "description": c.get("description", ""),
+                    "salary_raw": c.get("salary", ""),
                 })
                 if len(results) >= max_results:
                     break

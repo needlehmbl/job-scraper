@@ -127,11 +127,19 @@ def upsert_job(row: dict, conn=None) -> bool:
             cur.execute(
                 """
                 INSERT INTO jobs (source, title, company, url, location, date_posted, status,
-                                  score, score_reason, description)
+                                  score, score_reason, description,
+                                  salary_raw, salary_currency, salary_min, salary_max,
+                                  salary_interval, salary_monthly_min, salary_monthly_max,
+                                  salary_display)
                 VALUES (%(source)s, %(title)s, %(company)s, %(url)s, %(location)s,
                         %(date_posted)s, %(status)s,
                         COALESCE(%(score)s, 0), COALESCE(%(score_reason)s, ''),
-                        %(description)s)
+                        %(description)s,
+                        COALESCE(%(salary_raw)s, ''), COALESCE(%(salary_currency)s, ''),
+                        %(salary_min)s, %(salary_max)s,
+                        COALESCE(%(salary_interval)s, 'unknown'),
+                        %(salary_monthly_min)s, %(salary_monthly_max)s,
+                        COALESCE(%(salary_display)s, ''))
                 """,
                 {**row, "url": url, "description": (row.get("description") or None)},
             )
@@ -179,6 +187,14 @@ ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_salary TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_benefits TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_pros TEXT NOT NULL DEFAULT '';
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS offer_cons TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_raw TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_currency TEXT NOT NULL DEFAULT '';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_min DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_max DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_interval TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_monthly_min DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_monthly_max DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_display TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS job_stage_history (
   id SERIAL PRIMARY KEY,
   job_id INT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -277,13 +293,29 @@ CREATE TABLE IF NOT EXISTS filtered_jobs (
   search_term TEXT,
   filter_reason TEXT NOT NULL DEFAULT '',
   filtered_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  restored BOOLEAN NOT NULL DEFAULT FALSE
+  restored BOOLEAN NOT NULL DEFAULT FALSE,
+  salary_raw TEXT NOT NULL DEFAULT '',
+  salary_currency TEXT NOT NULL DEFAULT '',
+  salary_min DOUBLE PRECISION DEFAULT NULL,
+  salary_max DOUBLE PRECISION DEFAULT NULL,
+  salary_interval TEXT NOT NULL DEFAULT 'unknown',
+  salary_monthly_min DOUBLE PRECISION DEFAULT NULL,
+  salary_monthly_max DOUBLE PRECISION DEFAULT NULL,
+  salary_display TEXT NOT NULL DEFAULT ''
 );
 -- Partial unique index: real URLs dedupe, but rows scraped without a URL
 -- (rare -- the scraper normally drops those) are still storable.
 CREATE UNIQUE INDEX IF NOT EXISTS filtered_jobs_url_idx
   ON filtered_jobs (url) WHERE url <> '';
 CREATE INDEX IF NOT EXISTS filtered_jobs_restored_idx ON filtered_jobs (restored);
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_raw TEXT NOT NULL DEFAULT '';
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_currency TEXT NOT NULL DEFAULT '';
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_min DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_max DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_interval TEXT NOT NULL DEFAULT 'unknown';
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_monthly_min DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_monthly_max DOUBLE PRECISION DEFAULT NULL;
+ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_display TEXT NOT NULL DEFAULT '';
 """
 
 
@@ -348,12 +380,25 @@ def save_filtered_jobs(rows: list[dict], conn=None) -> int:
             for r, url in zip(rows, urls):
                 if not url or url in have:
                     continue
+                try:
+                    from salary import normalize_job_salary as _norm_sal
+                    sal = _norm_sal(dict(r))
+                except Exception:
+                    sal = {"salary_raw": "", "salary_currency": "",
+                           "salary_min": None, "salary_max": None,
+                           "salary_interval": "unknown",
+                           "salary_monthly_min": None,
+                           "salary_monthly_max": None, "salary_display": ""}
                 cur.execute(
                     """
                     INSERT INTO filtered_jobs
                       (source, title, company, url, location, date_posted,
-                       description, search_term, filter_reason)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       description, search_term, filter_reason,
+                       salary_raw, salary_currency, salary_min, salary_max,
+                       salary_interval, salary_monthly_min, salary_monthly_max,
+                       salary_display)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (url) WHERE url <> '' DO UPDATE SET
                       source = EXCLUDED.source,
                       title = EXCLUDED.title,
@@ -363,6 +408,14 @@ def save_filtered_jobs(rows: list[dict], conn=None) -> int:
                       description = EXCLUDED.description,
                       search_term = EXCLUDED.search_term,
                       filter_reason = EXCLUDED.filter_reason,
+                      salary_raw = EXCLUDED.salary_raw,
+                      salary_currency = EXCLUDED.salary_currency,
+                      salary_min = EXCLUDED.salary_min,
+                      salary_max = EXCLUDED.salary_max,
+                      salary_interval = EXCLUDED.salary_interval,
+                      salary_monthly_min = EXCLUDED.salary_monthly_min,
+                      salary_monthly_max = EXCLUDED.salary_monthly_max,
+                      salary_display = EXCLUDED.salary_display,
                       filtered_at = now(),
                       restored = FALSE
                     """,
@@ -374,7 +427,11 @@ def save_filtered_jobs(rows: list[dict], conn=None) -> int:
                      r.get("date_posted"),
                      (r.get("description") or "").strip() or None,
                      (r.get("matched_search_term") or r.get("search_term") or "").strip() or None,
-                     (r.get("filter_reason") or "").strip()),
+                     (r.get("filter_reason") or "").strip(),
+                     sal["salary_raw"], sal["salary_currency"],
+                     sal["salary_min"], sal["salary_max"],
+                     sal["salary_interval"], sal["salary_monthly_min"],
+                     sal["salary_monthly_max"], sal["salary_display"]),
                 )
                 n += 1
             conn.commit()
@@ -436,16 +493,26 @@ def restore_filtered_job(fid: int, conn=None) -> dict | None:
                 cur.execute(
                     """
                     INSERT INTO jobs (source, title, company, url, location, date_posted, status,
-                                      score, score_reason)
+                                      score, score_reason, description,
+                                      salary_raw, salary_currency, salary_min, salary_max,
+                                      salary_interval, salary_monthly_min, salary_monthly_max,
+                                      salary_display)
                     VALUES (%s, %s, %s, %s, %s, %s, 'NEW',
-                            COALESCE(%s, 0), COALESCE(%s, ''))
+                            COALESCE(%s, 0), COALESCE(%s, ''),
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (url) DO NOTHING
                     RETURNING *
                     """,
                     (f.get("source") or "", f.get("title") or "",
                      f.get("company") or "", url, f.get("location"),
                      f.get("date_posted"),
-                     f.get("score", f_score), f.get("score_reason", f_reason)),
+                     f.get("score", f_score), f.get("score_reason", f_reason),
+                     f.get("description"),
+                     f.get("salary_raw") or "", f.get("salary_currency") or "",
+                     f.get("salary_min"), f.get("salary_max"),
+                     f.get("salary_interval") or "unknown",
+                     f.get("salary_monthly_min"), f.get("salary_monthly_max"),
+                     f.get("salary_display") or ""),
                 )
                 job = cur.fetchone()
                 if job is None:  # lost a race with a concurrent insert; re-read
@@ -550,8 +617,12 @@ def reinsert_filtered_job(row: dict, conn=None) -> dict | None:
                     """
                     INSERT INTO filtered_jobs
                       (source, title, company, url, location, date_posted,
-                       description, search_term, filter_reason, restored)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                       description, search_term, filter_reason, restored,
+                       salary_raw, salary_currency, salary_min, salary_max,
+                       salary_interval, salary_monthly_min, salary_monthly_max,
+                       salary_display)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE,
+                            %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (url) WHERE url <> '' DO UPDATE SET
                       source = EXCLUDED.source,
                       title = EXCLUDED.title,
@@ -561,6 +632,14 @@ def reinsert_filtered_job(row: dict, conn=None) -> dict | None:
                       description = EXCLUDED.description,
                       search_term = EXCLUDED.search_term,
                       filter_reason = EXCLUDED.filter_reason,
+                      salary_raw = EXCLUDED.salary_raw,
+                      salary_currency = EXCLUDED.salary_currency,
+                      salary_min = EXCLUDED.salary_min,
+                      salary_max = EXCLUDED.salary_max,
+                      salary_interval = EXCLUDED.salary_interval,
+                      salary_monthly_min = EXCLUDED.salary_monthly_min,
+                      salary_monthly_max = EXCLUDED.salary_monthly_max,
+                      salary_display = EXCLUDED.salary_display,
                       restored = FALSE
                     RETURNING *
                     """,
@@ -572,15 +651,26 @@ def reinsert_filtered_job(row: dict, conn=None) -> dict | None:
                      row.get("date_posted"),
                      row.get("description"),
                      row.get("search_term"),
-                     row.get("filter_reason") or ""),
+                     row.get("filter_reason") or "",
+                     row.get("salary_raw") or "",
+                     row.get("salary_currency") or "",
+                     row.get("salary_min"), row.get("salary_max"),
+                     row.get("salary_interval") or "unknown",
+                     row.get("salary_monthly_min"),
+                     row.get("salary_monthly_max"),
+                     row.get("salary_display") or ""),
                 )
             else:
                 cur.execute(
                     """
                     INSERT INTO filtered_jobs
                       (source, title, company, url, location, date_posted,
-                       description, search_term, filter_reason, restored)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                       description, search_term, filter_reason, restored,
+                       salary_raw, salary_currency, salary_min, salary_max,
+                       salary_interval, salary_monthly_min, salary_monthly_max,
+                       salary_display)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE,
+                            %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING *
                     """,
                     (row.get("source") or "",
@@ -591,7 +681,14 @@ def reinsert_filtered_job(row: dict, conn=None) -> dict | None:
                      row.get("date_posted"),
                      row.get("description"),
                      row.get("search_term"),
-                     row.get("filter_reason") or ""),
+                     row.get("filter_reason") or "",
+                     row.get("salary_raw") or "",
+                     row.get("salary_currency") or "",
+                     row.get("salary_min"), row.get("salary_max"),
+                     row.get("salary_interval") or "unknown",
+                     row.get("salary_monthly_min"),
+                     row.get("salary_monthly_max"),
+                     row.get("salary_display") or ""),
                 )
             new_row = cur.fetchone()
             conn.commit()

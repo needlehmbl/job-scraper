@@ -123,10 +123,16 @@ def parse_cards(html: str) -> list[dict]:
         data_url = li.get("data-url", "")
         age_el = li.select_one("p.text-muted small") or li.select_one("p.text-muted")
         listed = age_el.get_text(" ", strip=True) if age_el else ""
-        location, company = "", ""
+        location, company, salary_raw = "", "", ""
         for sp in li.select(".nf-job-list-info span"):
             txt = sp.get_text(" ", strip=True)
-            if not txt or "₱" in txt or _is_type_span(txt):
+            if not txt:
+                continue
+            if "₱" in txt or re.search(r"\bPHP\b", txt, re.IGNORECASE):
+                if not salary_raw:
+                    salary_raw = txt
+                continue
+            if _is_type_span(txt):
                 continue
             if not location and _is_location_span(txt):
                 location = txt
@@ -147,6 +153,7 @@ def parse_cards(html: str) -> list[dict]:
             "listed": listed,
             "job_url": _clean_url(href, data_url),
             "description": desc,
+            "salary_raw": salary_raw,
         })
     return out
 
@@ -199,6 +206,7 @@ def scrape_trabajo(terms, where="Metro Manila, Philippines", max_results=50,
                     "date_posted": _parse_listed(c.get("listed", "")),
                     "job_url": c.get("job_url", ""),
                     "description": c.get("description", ""),
+                    "salary_raw": c.get("salary_raw", ""),
                     "site": "trabajo",
                 })
                 if len(rows) >= max_results:

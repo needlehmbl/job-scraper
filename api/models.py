@@ -43,6 +43,14 @@ class Job(BaseModel):
     offer_benefits: str = ""
     offer_pros: str = ""
     offer_cons: str = ""
+    salary_raw: str = ""
+    salary_currency: str = ""
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_interval: str = "unknown"
+    salary_monthly_min: float | None = None
+    salary_monthly_max: float | None = None
+    salary_display: str = ""
 
 
 class JobStatusUpdate(BaseModel):
@@ -62,6 +70,20 @@ class OfferUpdate(BaseModel):
     offer_benefits: str | None = None
     offer_pros: str | None = None
     offer_cons: str | None = None
+
+
+class SalaryUpdate(BaseModel):
+    """Manual correction of the scraped salary (Applied tab + Jobs modal).
+
+    salary_raw is re-parsed server-side; explicit min/max/interval/currency
+    override the parse. Blank raw + no overrides clears the salary.
+    """
+
+    salary_raw: str | None = None
+    salary_currency: str | None = Field(default=None, max_length=8)
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_interval: str | None = None
 
 
 class JobDetailsUpdate(BaseModel):
@@ -102,6 +124,14 @@ class FilteredJob(BaseModel):
     filter_reason: str = ""
     filtered_at: datetime | None = None
     restored: bool = False
+    salary_raw: str = ""
+    salary_currency: str = ""
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_interval: str = "unknown"
+    salary_monthly_min: float | None = None
+    salary_monthly_max: float | None = None
+    salary_display: str = ""
     # Only set by POST /filtered/{fid}/restore: the jobs row the posting was
     # moved into (NEW when the restore created it, otherwise the status that
     # row already had) so the dashboard can track and undo the move.
@@ -121,6 +151,14 @@ class FilteredReinsert(BaseModel):
     description: str | None = None
     search_term: str | None = None
     filter_reason: str = ""
+    salary_raw: str = ""
+    salary_currency: str = ""
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_interval: str = "unknown"
+    salary_monthly_min: float | None = None
+    salary_monthly_max: float | None = None
+    salary_display: str = ""
 
 
 class ManualAddRequest(BaseModel):
