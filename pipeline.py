@@ -148,18 +148,26 @@ def run_scrape() -> dict:
     fb = dict(getattr(scraper_mod, "last_feedback_report", {}) or {})
     heur_dropped = int(fb.get("heuristic_dropped", 0) or 0)
     ai_dropped = int(fb.get("ai_dropped", 0) or 0)
+    exp_dropped = list(getattr(scraper_mod, "last_exp_dropped", []) or [])
     from collections import Counter
     top_reasons = dict(Counter(fb.get("heuristic_reasons", []) or []).most_common(5))
+    if exp_dropped:
+        print(f"[pipeline] experience sift held {len(exp_dropped)} postings")
+        for reason, n in Counter(
+                (r.get("filter_reason") or "exp-gap")[:60]
+                for r in exp_dropped).most_common(5):
+            top_reasons[reason] = top_reasons.get(reason, 0) + n
     if ai_dropped and fb.get("ai_provider"):
         top_reasons[f"ai:{fb['ai_provider']}"] = ai_dropped
-    filtered = heur_dropped + ai_dropped
+    filtered = heur_dropped + ai_dropped + len(exp_dropped)
     if filtered:
         print(f"[pipeline] feedback filtered {filtered}: {top_reasons}")
     # Hold dropped postings for review even when nothing survived -- the
     # dashboard's Filtered tab reads this table.
     filtered_saved = 0
     try:
-        filtered_saved = db.save_filtered_jobs(list(fb.get("dropped_rows") or []))
+        filtered_saved = db.save_filtered_jobs(
+            list(fb.get("dropped_rows") or []) + exp_dropped)
         if filtered_saved:
             print(f"[pipeline] held {filtered_saved} filtered postings for review")
     except Exception as e:

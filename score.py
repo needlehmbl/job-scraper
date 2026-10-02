@@ -1,22 +1,32 @@
 """
 Heuristic relevance score for triage (no LLM, zero cost).
 
-Score is 0-100, computed from data the scrape already has
-(title + description + company) against your resume bank:
+Score is 0-100, computed from the posting (title + QUALIFICATIONS section
+when one is found, else title + full description) against your resume bank:
 
   base 50
-  +5 per posting skill found in your bank (cap +30)
-  -4 per posting skill missing from your bank (floor -20)
+  +5 per posting skill found in your bank, double-weighted when the skill
+      appears in the qualifications/requirements block (cap +30)
+  -4 per quals-mentioned skill missing from your bank (floor -20;
+      intro-fluff mentions outside the quals block don't count against you)
   +10 / +5 / +0 junior-fit bonus from explicit experience requirement
       (0 yrs / fresh-grad => +10, 1 yr => +5, 2 yrs / unstated => +0)
+  -15 when the description carries a year-less seniority signal
+      ("senior developer", "lead a team", ...) that slipped past the sift
   -25 company in learned-bad list, -10 per learned-bad title token (cap -20)
+
+Candidate baseline is fresh graduate with ~0 years: anything over the
+`max_experience_years` ceiling never reaches scoring (the sift holds it
+in the Filtered tab), so an unstated requirement scores neutral, never
+as a penalty.
 
 Learned-bad lists come from feedback.learn_patterns() (your dashboard
 SKIP/MISMATCH/EXP_GAP decisions). Survivors of the feedback
 filter rarely hit them -- the penalty mainly orders borderline rows.
 
 Bank source: default resume in resumes/library.json, falling back to
-resume_bank.yaml (repo root) so scoring works before any .docx upload.
+resume_bank.yaml (repo root) so scoring works before any upload
+(.docx or .pdf).
 """
 import os
 
@@ -153,25 +163,48 @@ def score_job(title: str, company: str, description: str = "",
     except Exception:
         SKILL_LEXICON = {}
     try:
-        from scraper import max_experience_years
+        from scraper import max_experience_years, extract_quals_section, seniority_hit
     except Exception:
         def max_experience_years(_t):
             return None
+
+        def extract_quals_section(_t):
+            return ""
+
+        def seniority_hit(_t):
+            return ""
     if bank_low is None:
         try:
             bank_low = load_bank_text()
         except Exception:
             bank_low = ""
-    job_low = f"{title or ''}\n{description or ''}".lower()
+    quals = ""
+    try:
+        quals = extract_quals_section(description or "")
+    except Exception:
+        quals = ""
+    # Judge skill overlap on requirements, not company-intro fluff: when a
+    # qualifications block is found, title + quals is the evidence and
+    # quals hits count double; otherwise fall back to the full text.
+    quals_low = quals.lower()
+    if quals:
+        job_low = f"{title or ''}\n{quals}".lower()
+    else:
+        job_low = f"{title or ''}\n{description or ''}".lower()
 
     matched, missing = [], []
+    quals_matched = []
     for skill, aliases in (SKILL_LEXICON or {}).items():
         if _mentions(job_low, aliases):
-            (matched if bank_low and _mentions(bank_low, aliases)
-             else missing).append(skill)
+            if bank_low and _mentions(bank_low, aliases):
+                matched.append(skill)
+                if quals and _mentions(quals_low, aliases):
+                    quals_matched.append(skill)
+            else:
+                missing.append(skill)
 
     score = 50
-    score += min(len(matched) * _MATCH_POINTS, _MATCH_CAP)
+    score += min((len(matched) + len(quals_matched)) * _MATCH_POINTS, _MATCH_CAP)
     score -= min(len(missing) * _MISSING_POINTS, _MISSING_FLOOR)
 
     try:
@@ -186,6 +219,15 @@ def score_job(title: str, company: str, description: str = "",
         score += 5
         junior_note = "1-yr fit"
 
+    senior_note = ""
+    try:
+        _shit = seniority_hit(description or "")
+    except Exception:
+        _shit = ""
+    if _shit:
+        score -= 15
+        senior_note = f"seniority flag ({_shit})"
+
     pen, pen_notes = learned_penalties(title or "", company or "", patterns)
     score += pen
     score = max(0, min(100, score))
@@ -199,6 +241,10 @@ def score_job(title: str, company: str, description: str = "",
         bits.append("missing " + ", ".join(missing[:3]))
     if junior_note:
         bits.append(junior_note)
+    if quals and quals_matched:
+        bits.append(f"quals: {', '.join(quals_matched[:3])}")
+    if senior_note:
+        bits.append(senior_note)
     bits.extend(pen_notes)
     reason = "; ".join(bits)[:280] or "no skill overlap detected"
     return score, reason

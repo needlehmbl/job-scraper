@@ -27,6 +27,13 @@ import lever
 import trabajo
 from locations import is_metro_manila, is_ph_or_metro
 
+# Last scrape's experience-sift drops, filled by apply_keyword_filters
+# (keys: title/company/location/job_url/site/description/date_posted/
+# matched_search_term/filter_reason -- same shape as feedback._dropped_row).
+# The pipeline holds these in the Filtered tab instead of dropping them
+# silently, since exp_gap is the most common reason postings are wrong.
+last_exp_dropped: list = []
+
 # Last run's feedback-filter breakdown, filled by apply_feedback_filter
 # (keys: heuristic_dropped, heuristic_reasons, ai_dropped, ai_provider).
 # Single-user local tool: the pipeline reads this right after scrape().
@@ -124,7 +131,8 @@ _FILL = r"(?:\s+[\w-]+){0,4}\s+"
 # "business" or "warranty" must NOT match ("25 years in business").
 _WORK_NOUN = (
     r"(?:experience|work|employment|development|engineering|programming|"
-    r"coding|exposure|testing|design|support|administration|operations)"
+    r"coding|exposure|testing|design|support|administration|operations|"
+    r"it|software|tech|industry|field|role)"
 )
 
 _MAX_EXP_PAT = re.compile(
@@ -162,9 +170,131 @@ _EXP_BARE_PAT = re.compile(
 )
 
 _NO_EXP_PAT = re.compile(
-    r"\b(?:no\s+experience|fresh\s+graduate|entry[- ]level|0\s*years?\s*experience)\b",
+    r"\b(?:no\s+experience|fresh\s+graduates?|entry[- ]levels?|"
+    r"0\s*years?\s*experience)\b",
     re.IGNORECASE,
 )
+
+# Strong seniority signals that state NO explicit year count, so
+# max_experience_years() misses them and the posting would otherwise slip
+# into NEW. Deliberately narrow (balanced): verb-form "lead" alone is not
+# enough, only leading people; "preferred" years only count at 3+.
+_SENIOR_TITLE_PAT = re.compile(
+    r"\b(?:senior|sr\.?|lead|principal|staff|head|architect)\s+"
+    r"(?:developer|engineer|programmer|analyst|qa|tester|devops|"
+    r"designer|consultant|specialist|administrator|support)\b"
+    r"|\b(?:team|tech)\s*lead\b"
+    r"|\bengineering\s+manager\b",
+    re.IGNORECASE,
+)
+_SENIOR_PHRASE_PAT = re.compile(
+    r"\b(?:extensive\s+experience|proven\s+(?:experience|track\s+record)|"
+    r"seasoned\s+(?:professional|developer|engineer)|"
+    r"lead\s+a\s+team|manage\s+a\s+team|"
+    r"mentor\s+(?:junior|engineers?|a\s+team|your\s+team)|"
+    r"leadership\s+experience)\b",
+    re.IGNORECASE,
+)
+# "3+ years preferred" / "4 years desired" with no "experience" word.
+# Only 3+ counts: 1-2 preferred years is a wish, not a requirement.
+_SENIOR_PREFERRED_PAT = re.compile(
+    r"\b([3-9]|1\d)\s*\+?\s*years?\s+"
+    r"(?:preferred|desired|favour(?:ed|able)|favor(?:ed|able)|a\s+plus)\b",
+    re.IGNORECASE,
+)
+# Bare "3+ years" with the plus (no "experience" word after it).
+_SENIOR_BARE_YEARS_PAT = re.compile(
+    r"\b([3-9]|1\d)\s*\+\s*years?(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+# Headings that open the must-have section of a posting. Used to slice
+# the qualifications block out for fit scoring, so skill overlap is judged
+# on requirements rather than company-intro fluff.
+_QUALS_HEADING_PAT = re.compile(
+    r"(?im)^[ \t*•\-#]{0,4}"
+    r"(?:qualifications?|requirements?|what\s+(?:you(?:'ll|\s+will)?\s+"
+    r"(?:need|bring|have)|we(?:'re|\s+are)?\s+looking\s+for)|"
+    r"key\s+(?:qualifications?|requirements?|skills?)|"
+    r"minimum\s+(?:qualifications?|requirements?)|"
+    r"preferred\s+(?:qualifications?|requirements?|skills?)|"
+    r"(?:must|nice)\s*-?\s*have|job\s+requirements?|"
+    r"who\s+you\s+are|about\s+you|ideal\s+candidate|"
+    r"what\s+you\s+bring)\s*:?\s*$",
+)
+_NEXT_HEADING_PAT = re.compile(
+    r"(?im)^[ \t*•\-#]{0,4}"
+    r"(?:responsibilities|duties|what\s+you(?:'ll|\s+will)?\s+do|"
+    r"benefits?(?:\s+and\s+perks?)?|compensation|salary|about\s+"
+    r"(?:us|the\s+(?:company|role|team))|how\s+to\s+apply)\s*:?\s*$",
+)
+
+
+def extract_quals_section(description) -> str:
+    """Return the qualifications/requirements block of a posting.
+
+    From the first quals-like heading to the next non-quals heading (or
+    end of text). Empty string when no quals heading is found, so callers
+    can fall back to the full description."""
+    if not isinstance(description, str) or not description.strip():
+        return ""
+    m = _QUALS_HEADING_PAT.search(description)
+    if not m:
+        return ""
+    tail = description[m.end():]
+    n = _NEXT_HEADING_PAT.search(tail)
+    if n:
+        tail = tail[:n.start()]
+    return tail.strip(" \n\t:-–—")[:6000]
+
+
+def seniority_hit(text) -> str:
+    """Short matched seniority signal, or '' when the text reads junior-ok.
+
+    Year-less only: explicit "N years" requirements are handled by
+    max_experience_years(). Never raises, NaN-safe."""
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    low = re.sub(r"\s+", " ", text.lower())
+    if _NO_EXP_PAT.search(low):
+        return ""  # explicit fresh-grad invite wins over seniority words
+    m = _SENIOR_TITLE_PAT.search(low)
+    if m:
+        return m.group(0).strip()[:40]
+    m = _SENIOR_PHRASE_PAT.search(low)
+    if m:
+        return m.group(0).strip()[:40]
+    m = _SENIOR_PREFERRED_PAT.search(low) or _SENIOR_BARE_YEARS_PAT.search(low)
+    if m:
+        return m.group(0).strip()[:40]
+    return ""
+
+
+def experience_filter_reason(description, cap=2) -> str | None:
+    """Why a posting fails the experience sift, or None when it passes.
+
+    Fresh-graduate default: `cap` is the ceiling in years (config
+    `max_experience_years`, 2). Explicit over-ceiling requirements AND
+    year-less seniority signals both come back as `exp-gap:` reasons so
+    the pipeline can hold them in the Filtered tab for review."""
+    try:
+        cap = float(cap or 0)
+    except (TypeError, ValueError):
+        cap = 2.0
+    try:
+        req = max_experience_years(description)
+    except Exception:
+        req = None
+    if req is not None and req > cap:
+        req_s = ("%g" % req).rstrip("0").rstrip(".") if "." in "%g" % req else "%g" % req
+        return f"exp-gap:needs {req_s} yrs (ceiling {cap:g})"
+    try:
+        hit = seniority_hit(description)
+    except Exception:
+        hit = ""
+    if hit:
+        return f"exp-gap:seniority signal ({hit})"
+    return None
 
 
 def max_experience_years(text) -> float | None:
@@ -423,7 +553,9 @@ def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
 def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     s = cfg["search"]
     all_frames = []
-    global last_source_report
+    global last_source_report, last_exp_dropped
+    last_exp_dropped = []
+    exp_drops: list = []
     stats: dict = {}  # source -> {"terms", "rows", "errors"}
 
     def note(source: str, rows: int = 0, error: str = ""):
@@ -530,7 +662,11 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     except Exception as e:
         print(f"[scraper] WARNING: fingerprint dedup failed ({e}); keeping URL-deduped rows.")
 
-    combined = apply_keyword_filters(combined, s)
+    combined = apply_keyword_filters(combined, s, dropped_out=exp_drops)
+    last_exp_dropped = exp_drops
+    if exp_drops:
+        print(f"[scraper] experience sift: held {len(exp_drops)} postings "
+              f"for Filtered-tab review.")
     bump_progress(1, phase="applying keyword + experience filters",
                   detail=f"{len(combined)} rows kept")
     set_progress("applying learned feedback filters",
@@ -543,7 +679,14 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     return combined.reset_index(drop=True)
 
 
-def apply_keyword_filters(df: pd.DataFrame, s: dict) -> pd.DataFrame:
+def apply_keyword_filters(df: pd.DataFrame, s: dict,
+                          dropped_out: list | None = None) -> pd.DataFrame:
+    """Title/company/location gate plus the experience sift.
+
+    Experience failures (over-ceiling years AND year-less seniority
+    signals -- see experience_filter_reason) are appended to `dropped_out`
+    with `exp-gap:` reasons when a list is given, so the pipeline can hold
+    them in the Filtered tab; everything else still drops silently."""
     def title_ok(title: str) -> bool:
         if not isinstance(title, str):
             return False
@@ -561,12 +704,12 @@ def apply_keyword_filters(df: pd.DataFrame, s: dict) -> pd.DataFrame:
         low = company.lower()
         return not any(k.lower() in low for k in s.get("exclude_company_keywords", []))
 
+    cap = s.get("max_experience_years", 2)
+
     def experience_ok(description) -> bool:
-        cap = s.get("max_experience_years")
         if not cap or not isinstance(description, str) or not description.strip():
             return True
-        req = max_experience_years(description)
-        return req is None or req <= cap
+        return experience_filter_reason(description, cap) is None
 
     mask = df["title"].apply(title_ok) & df["company"].apply(company_ok)
     if "location" in df.columns:
@@ -578,7 +721,19 @@ def apply_keyword_filters(df: pd.DataFrame, s: dict) -> pd.DataFrame:
             return is_metro_manila(row.get("location", ""))
         mask = mask & df.apply(loc_ok, axis=1)
     if "description" in df.columns:
-        mask = mask & df["description"].apply(experience_ok)
+        exp_mask = df["description"].apply(experience_ok)
+        if dropped_out is not None:
+            try:
+                import feedback as _fb
+                for _, row in df[~exp_mask].iterrows():
+                    reason = (experience_filter_reason(
+                        row.get("description", ""), cap)
+                        or "exp-gap:experience sift")
+                    dropped_out.append(_fb._dropped_row(row, reason))
+            except Exception as e:
+                print(f"[scraper] WARNING: exp-gap review save failed "
+                      f"({e}); dropping silently.")
+        mask = mask & exp_mask
     out = df[mask]
     # Internal marker, never persisted (pipeline only reads known keys).
     if "_loose_location" in out.columns:

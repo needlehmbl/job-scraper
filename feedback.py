@@ -775,8 +775,19 @@ def _record_usage(fc: dict, tokens_used: int) -> tuple[int, int]:
 def _desc_snippet(value, limit: int) -> str:
     """Posting description collapsed to one line, truncated at a word
     boundary. Empty/missing descriptions become an explicit placeholder
-    so the model tolerates short-snippet sources (JobStreet) gracefully."""
+    so the model tolerates short-snippet sources (JobStreet) gracefully.
+
+    Qualifications-first: the requirements block is prepended so skill and
+    seniority evidence survives truncation instead of company-intro fluff."""
     s = re.sub(r"\s+", " ", _cell(value)).strip()
+    try:
+        from scraper import extract_quals_section
+        quals = re.sub(r"\s+", " ",
+                       (extract_quals_section(_cell(value)) or "")).strip()
+    except Exception:
+        quals = ""
+    if quals and len(quals) > 200 and quals not in s[:len(quals) + 10]:
+        s = f"Requirements: {quals} | Posting: {s}"
     limit = max(100, int(limit or 0))
     if len(s) > limit:
         s = s[:limit].rsplit(" ", 1)[0] + "…"

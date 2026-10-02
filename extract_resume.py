@@ -1,5 +1,5 @@
 """
-Extract a structured resume bank from a .docx resume.
+Extract a structured resume bank from a .docx or .pdf resume.
 
 Understands the Harvard-style layout (centered name header, centered
 UPPER/lowercase section headings, two-column company+location /
@@ -7,9 +7,15 @@ title+dates lines split by tabs or wide spacing, bulleted achievements,
 labeled skill groups) instead of dumping every paragraph into one pile:
 
     python extract_resume.py resume.docx [out.yaml]
+    python extract_resume.py resume.pdf [out.yaml]
 
-Also importable -- `extract_bank(path)` returns the bank dict so the
+Also importable -- `extract_bank(path)` (docx) and
+`extract_bank_from_pdf(path)` (pdf) return the bank dict so the
 dashboard upload endpoint can parse dropped-in resumes server-side.
+PDFs are read with pypdf as plain text lines (no bold/centering
+survives, so headings are detected by text match and company/title
+columns by tab/wide-space splits); scanned/image PDFs with no
+extractable text raise a clear error instead of an empty bank.
 
 Output schema matches resume_bank.yaml (contact / summary / skills /
 experience / projects / education / certifications / soft_skills /
@@ -63,6 +69,11 @@ _SKILL_LABELS = {
     "interest": "interests",
 }
 
+# Bullet glyphs: standard marks plus private-use \uf0b7 (what LibreOffice
+# and Word-to-PDF exports emit for round bullets).
+_BULLET_CLASS = r"[•▪●◦·\uf0b7\-\u2013\u2014*]"
+_BULLET_PAT = re.compile(_BULLET_CLASS + r"\s+")
+_BULLET_ONLY_PAT = re.compile(r"[.\s•·\uf0b7-]+")
 _URL_PAT = re.compile(r"https?://\S+|www\.\S+|[\w.+-]+@[\w-]+\.[\w.]+")
 _EMAIL_PAT = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _PHONE_PAT = re.compile(r"(\+?\d[\d\s().-]{6,}\d)")
@@ -144,7 +155,7 @@ def _is_bullet(p, text: str) -> bool:
     style = (p.style.name or "").lower()
     if "list" in style or "bullet" in style:
         return True
-    return bool(re.match(r"^[•▪●◦\-\u2013\u2014*]\s+", text))
+    return bool(_BULLET_PAT.match(text))
 
 
 def _norm_heading(text: str) -> str:
@@ -282,7 +293,7 @@ def _parse_education(blocks):
 
 
 def _is_bullet_text(text: str) -> bool:
-    return bool(re.match(r"^[•▪●◦\-\u2013\u2014*]\s+", text))
+    return bool(_BULLET_PAT.match(text))
 
 
 def _parse_experience(blocks, para_styles):
@@ -291,7 +302,7 @@ def _parse_experience(blocks, para_styles):
     for (text, centered, prefix, rest), is_bullet in zip(blocks, para_styles):
         if is_bullet:
             if cur is not None:
-                bullet = re.sub(r"^[•▪●◦\-\u2013\u2014*]\s+", "", text).strip()
+                bullet = _BULLET_PAT.sub("", text, count=1).strip()
                 if bullet:
                     cur["bullets"].append(
                         {"text": bullet, "tags": guess_tags(bullet)})
@@ -379,7 +390,7 @@ def _parse_skills(blocks):
             cur_items = []
             groups.append({"group": "General", "items": cur_items})
             target = cur_items
-        item = re.sub(r"^[•▪●◦\-\u2013\u2014*]\s+", "", text).strip().rstrip(".")
+        item = _BULLET_PAT.sub("", text, count=1).strip().rstrip(".")
         if item:
             # Comma lists ("English – fluent" stays whole; "Python, Java"
             # splits) -- split only on commas separating short tokens.
@@ -393,29 +404,11 @@ def _parse_skills(blocks):
 
 # ------------------------------------------------------------ main entry
 
-def extract_bank(path: str) -> dict:
-    doc = Document(path)
-    header, sections, cur_key, cur_block = [], {}, None, None
-    for p in doc.paragraphs:
-        text = (p.text or "").strip()
-        if not text or len(text) < 2 or re.fullmatch(r"[.\s•·-]+", text):
-            continue  # stray artifacts (e.g. a lone "." first line)
-        info = _para_info(p)
-        _, centered, _, _ = info
-        runs = [r for r in p.runs if (r.text or "").strip()]
-        all_bold = bool(runs) and all(bool(r.bold) for r in runs)
-        key = _is_section_heading(text, centered, all_bold,
-                                  p.style.name or "")
-        if key is not None:  # a new section starts -- switch to it
-            cur_key = key
-            cur_block = []
-            sections.setdefault(key, []).append(cur_block)
-            continue
-        if cur_key is None:
-            header.append(info)
-        else:
-            cur_block.append((info, _is_bullet(p, text)))
+def _assemble_bank(header, sections):
+    """Build the bank dict from header infos + {key: [(info, is_bullet)]}.
 
+    Shared by the docx and pdf entry points so both produce the same
+    schema from the same section parsers."""
     bank = {
         "contact": _parse_contact(header),
         "summary": {"variants": []},
@@ -426,9 +419,9 @@ def extract_bank(path: str) -> dict:
         "certifications": [],
     }
     extra = {}
-    for key, blocks_list in sections.items():
-        flat_infos = [info for block in blocks_list for info, _ in block]
-        flat_flags = [flag for block in blocks_list for _, flag in block]
+    for key, tagged in sections.items():
+        flat_infos = [info for info, _ in tagged]
+        flat_flags = [flag for _, flag in tagged]
         if key == "summary":
             bank["summary"]["variants"] = [
                 " ".join(t for t, *_ in flat_infos)]
@@ -456,6 +449,134 @@ def extract_bank(path: str) -> dict:
         bank["extra_sections"] = extra
     _hoist_education_links(bank)
     return bank
+
+
+def extract_bank(path: str) -> dict:
+    doc = Document(path)
+    header, sections, cur_key, cur_block = [], {}, None, None
+    for p in doc.paragraphs:
+        text = (p.text or "").strip()
+        if not text or len(text) < 2 or _BULLET_ONLY_PAT.fullmatch(text):
+            continue  # stray artifacts (e.g. a lone "." first line)
+        info = _para_info(p)
+        _, centered, _, _ = info
+        runs = [r for r in p.runs if (r.text or "").strip()]
+        all_bold = bool(runs) and all(bool(r.bold) for r in runs)
+        key = _is_section_heading(text, centered, all_bold,
+                                  p.style.name or "")
+        if key is not None:  # a new section starts -- switch to it
+            cur_key = key
+            cur_block = []
+            sections.setdefault(key, []).append(cur_block)
+            continue
+        if cur_key is None:
+            header.append(info)
+        else:
+            cur_block.append((info, _is_bullet(p, text)))
+
+    flat = {k: [(info, flag) for block in blocks for info, flag in block]
+            for k, blocks in sections.items()}
+    return _assemble_bank(header, flat)
+
+
+_PDF_PAGE_PAT = re.compile(r"^(page\s+\d+(\s+of\s+\d+)?|\d+\s*/\s*\d+)$",
+                           re.IGNORECASE)
+_PDF_COL_PAT = re.compile(r"\t+|\s{2,}|\s+\|\s+")
+
+
+def _pdf_info(line: str, is_lead: bool):
+    """Synthesize a docx-style (text, centered, prefix, rest) tuple.
+
+    Plain text has no bold runs, so for lead lines (company / title /
+    school / skill-label) the text before a tab/wide-space/pipe split
+    plays the bold-lead role; continuation lines get an empty prefix so
+    the column parsers treat them as prose (degrees, notes, items)
+    instead of starting new entries."""
+    text = line.strip()
+    if not is_lead:
+        return text, False, "", text
+    parts = [x.strip(" ,|") for x in _PDF_COL_PAT.split(text)]
+    parts = [x for x in parts if x]
+    if len(parts) >= 2:
+        return text, False, parts[0], " ".join(parts[1:])
+    return text, False, text, ""
+
+
+def _pdf_is_lead(line: str, boundary: bool, section: str | None) -> bool:
+    """Decide whether a pdf text line opens a new entry.
+
+    Leads have a column split, look like a `Label:` line, carry dates in
+    the experience section (title/dates lines -- elsewhere a date means
+    a degree/certification detail line), or are short lines right after
+    a heading/bullet run (company/school lines -- tabs rarely survive
+    the pdf text layer)."""
+    if _PDF_COL_PAT.search(line):
+        return True
+    if line.rstrip().endswith(":") and len(line) < 40:
+        return True
+    if _DATE_PAT.search(line):
+        return section == "experience"
+    return boundary and len(line) < 70
+
+
+def _pdf_heading(line: str) -> str | None:
+    """Section key when a pdf text line looks like a section heading."""
+    if len(line) > 40 or len(line.split()) > 4:
+        return None
+    return SECTIONS.get(_norm_heading(line))
+
+
+def extract_bank_from_pdf(path: str) -> dict:
+    """Same bank schema as extract_bank, from a .pdf resume's text layer."""
+    try:
+        from pypdf import PdfReader
+    except ImportError as e:
+        raise ValueError("pdf support needs the 'pypdf' package "
+                         "(pip install -r requirements.txt)") from e
+    reader = PdfReader(path)
+    raw: list[str] = []
+    try:
+        pages = list(reader.pages)
+    except Exception as e:
+        raise ValueError(f"could not read pdf pages ({e})") from e
+    for page in pages:
+        try:
+            raw.extend((page.extract_text() or "").splitlines())
+        except Exception:
+            continue
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in raw]
+    lines = [ln for ln in lines if ln and not _PDF_PAGE_PAT.match(ln)]
+    if not lines:
+        raise ValueError("no extractable text found -- is it a scanned/"
+                         "image PDF? Export a text (not scanned) PDF instead")
+    if len(" ".join(lines)) < 200:
+        raise ValueError("almost no extractable text found -- is it a scanned/"
+                         "image PDF? Export a text (not scanned) PDF instead")
+    header: list = []
+    sections: dict = {}
+    cur_key = None
+    boundary = True  # next short line after a heading/bullets opens an entry
+    for ln in lines:
+        key = _pdf_heading(ln)
+        if key is not None:
+            cur_key = key
+            sections.setdefault(key, [])
+            boundary = True
+            continue
+        is_bullet = bool(_BULLET_PAT.match(ln))
+        if cur_key is None:
+            header.append(_pdf_info(ln, True))
+            continue
+        if not is_bullet and not _pdf_is_lead(ln, boundary, cur_key):
+            # Continuation prose: degree detail, job notes, skill items.
+            sections[cur_key].append((_pdf_info(ln, False), False))
+            boundary = False
+            continue
+        sections[cur_key].append((_pdf_info(ln, True), is_bullet))
+        # A new job/school starts after a heading or a bullet run -- but
+        # prose following a title line belongs to that job, not a new one.
+        boundary = is_bullet
+    return _assemble_bank(header, sections)
 
 
 def _hoist_education_links(bank: dict):
@@ -486,7 +607,10 @@ def _hoist_education_links(bank: dict):
 
 
 def main(path: str, out_path: str = "resume_bank.extracted.yaml"):
-    bank = extract_bank(path)
+    if path.lower().endswith(".pdf"):
+        bank = extract_bank_from_pdf(path)
+    else:
+        bank = extract_bank(path)
     with open(out_path, "w") as f:
         yaml.dump(bank, f, sort_keys=False, allow_unicode=True, width=100)
     c = bank["contact"]
@@ -514,7 +638,7 @@ def main(path: str, out_path: str = "resume_bank.extracted.yaml"):
 
 if __name__ == "__main__":
     if len(sys.argv) not in (2, 3):
-        print("Usage: python extract_resume.py resume.docx [out.yaml]")
+        print("Usage: python extract_resume.py resume.docx|resume.pdf [out.yaml]")
         sys.exit(1)
     main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else
          "resume_bank.extracted.yaml")

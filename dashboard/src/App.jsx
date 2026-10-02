@@ -1922,9 +1922,9 @@ function describeScrapeProgress(p) {
 
   const uploadResumes = useCallback(
     async (files) => {
-      const docs = [...(files || [])].filter((f) => /\.docx$/i.test(f.name))
+      const docs = [...(files || [])].filter((f) => /\.(docx|pdf)$/i.test(f.name))
       if (!docs.length) {
-        setUploadNote('Drop a .docx resume file.')
+        setUploadNote('Drop a .docx or .pdf resume file.')
         return
       }
       setUploading(true)
@@ -2447,7 +2447,7 @@ function describeScrapeProgress(p) {
         <section className="mt-6 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
           <div className="mb-2 flex items-center justify-between">
             <h2 className="text-sm font-medium text-neutral-600 dark:text-neutral-400">
-              Resumes — drag &amp; drop a .docx to add it to the tailoring library
+              Resumes — drag &amp; drop a .docx or .pdf to add it to the tailoring library
             </h2>
             {uploading && (
               <span className="text-xs text-neutral-500 dark:text-neutral-400">Parsing…</span>
@@ -2471,10 +2471,10 @@ function describeScrapeProgress(p) {
             }`}
           >
             <label className="cursor-pointer rounded-lg bg-neutral-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-neutral-700 dark:bg-neutral-200 dark:text-neutral-800 dark:hover:bg-neutral-300">
-              Choose .docx
+              Choose .docx/.pdf
               <input
                 type="file"
-                accept=".docx"
+                accept=".docx,.pdf"
                 multiple
                 className="hidden"
                 onChange={(e) => {

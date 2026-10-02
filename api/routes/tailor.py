@@ -1,7 +1,7 @@
 """Resume library + per-posting tailoring endpoints.
 
 GET    /resumes                     -- list uploaded resumes + default
-POST   /resumes/upload              -- drag-drop a .docx (parsed server-side)
+POST   /resumes/upload              -- drag-drop a .docx/.pdf (parsed server-side)
 POST   /resumes/default             -- {name} set the default resume
 DELETE /resumes/{name}              -- remove a resume + its bank sidecar
 
