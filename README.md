@@ -1,8 +1,8 @@
 # Job Search Scraper + Dashboard
 
 Scrape pipeline + local web dashboard: scrapes Indeed, LinkedIn
-(via JobSpy), JobStreet and Glassdoor (via Playwright/Chromium), plus
-Greenhouse/Lever
+(via JobSpy), JobStreet and Glassdoor (via Playwright/Chromium),
+Trabajo.org (plain-HTTP aggregator), plus Greenhouse/Lever
 company boards (public JSON APIs), for
 junior/entry-level roles in Metro Manila, applies keyword +
 years-of-experience filters, dedupes, and stores new leads in **Postgres**.
@@ -17,6 +17,19 @@ to postings from a browser tab.
   **Apply** button per row that opens the posting as a new tab in your
   existing browser.
 - Checkbox column + bulk bar for setting one status on many rows at once.
+- **Salary capture:** scraped ranges are normalized to a monthly estimate
+  (`salary.py` → `salary_display`, e.g. `PHP 42k–60k/mo`). The dashboard
+  shows a Salary column with a hover breakdown (raw / interval / monthly
+  estimate / currency); the details modal shows salary on top of the full
+  posting description and lets you correct the raw text (re-parsed
+  server-side via `PATCH /jobs/{id}/salary`, blank clears).
+- **Descriptions stored:** new scrapes save the full posting text, shown
+  in the details modal. Rows scraped before description capture heal on
+  re-scrape (`heal_existing` fills only empty columns, never overwrites);
+  older rows can be revisited in bulk with `backfill_details.py`.
+- **Manual add:** paste any posting URL to track it directly — company and
+  description are auto-fetched for all sites, and duplicates are caught by
+  URL then title+company fingerprint and merged instead of duplicated.
 - The scraper learns from your decisions (`SKIP` / `MISMATCH` /
   `EXP_GAP` vs `APPLIED` / `REVIEWED`) and drops lookalikes next run.
 - A **Resumes** library (drag-drop `.docx`) plus a per-row **Tailor** button:
@@ -159,6 +172,10 @@ venv/bin/python main.py          scrape -> Postgres (jobs, scrape_runs)
 pipeline.py                     shared scrape pipeline (CLI + API button use the same code)
 greenhouse.py / lever.py          direct company-board scrapers (public JSON APIs, no browser) — slugs in `company_boards`
 jobstreet.py / glassdoor.py       Playwright/Chromium scrapers (no jobspy provider / bot-walled API) — locations in `search.location` / `glassdoor_locations`
+trabajo.py                      ph.trabajo.org aggregator (plain HTTP + BeautifulSoup, no browser) — in default `site_names`, cards often carry salary spans
+salary.py                       salary-range capture + normalization to monthly estimates (`salary_display`, e.g. `PHP 42k–60k/mo`)
+manual_fetch.py                 plain-HTTP + headless-Chromium fallback fetcher (manual add, backfill, description healing)
+backfill_details.py             revisit stored URLs to fill missing descriptions + salaries (resume-safe, `--limit` batches)
 filtered_jobs (Postgres)          postings the auto-filter held out, with per-row reason — reviewed in the dashboard's Filtered tab
 api/routes/filtered.py            GET /filtered, POST /filtered/{id}/restore, DELETE /filtered/{id}
 job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
@@ -257,10 +274,10 @@ for review** tabs sit above the table:
   your resume, `missing` = posting asks for what you don't list,
   entry-level postings get a small bonus, and titles matching your past
   reject patterns lose points. Hover any score for the one-line
-  breakdown. Computed locally from `resume_bank.yaml` (or your default
-  uploaded resume) at scrape time — zero LLM cost. Title-only for older
-  rows (the tracker stores no descriptions); new scrapes score with the
-  full posting text.
+   breakdown. Computed locally from `resume_bank.yaml` (or your default
+   uploaded resume) at scrape time — zero LLM cost, using the full
+   posting text. Rows that predate description capture score title-only
+   until a re-scrape (or `backfill_details.py`) fills them in.
 - **Follow-up column** — date picker per row ("ping if no response by").
   Overdue dates highlight red; the `◌ Due follow-ups (n)` chip above the
   table filters to just those. Cleared by picking an empty date.
@@ -357,7 +374,9 @@ file upload is attempted.
 
 - `GET /jobs` — query params: `status`, `source`, `date_from`, `date_to`,
   `search` (title/company substring), `sort` (`score` default desc |
-  `scraped` | `posted`) + `direction` (`asc` to flip).
+  `scraped` | `posted`) + `direction` (`asc` to flip). Rows include
+  `description` plus normalized salary fields (`salary_display`,
+  `salary_monthly_min/max`, …).
 - `PATCH /jobs/{id}` — `{"status": "..."}`; sets `applied_at` when
   `APPLIED`, clears it when moving to any other status. Entering
   `APPLIED` starts the funnel (`stage: APPLIED`); leaving it clears the
@@ -377,6 +396,13 @@ file upload is attempted.
    per day) for the graph.
 - `PATCH /jobs/{id}/offer` — save offer details (`offer_salary`,
   `offer_benefits`, `offer_pros`, `offer_cons`; only sent fields change).
+- `PATCH /jobs/{id}/salary` — correct the scraped posted salary
+  (`salary_raw` is re-parsed server-side; explicit min/max/interval/
+  currency override the parse; blank raw + no overrides clears it).
+- `POST /jobs/manual-add` — track a posting by URL (`title`/`company`/
+  `location` optional overrides win over auto-fetched values); dedupes by
+  URL then title+company fingerprint, merging into the existing row
+  (filling only empty fields) instead of duplicating.
 - `GET /jobs/{id}/history` — status + stage timeline for one posting
   (shows which funnel stage a rejection came after).
 - `GET /runs/latest` — most recent `scrape_runs` row.
@@ -476,8 +502,7 @@ The dashboard's **Resumes** panel accepts drag-dropped `.docx` files
 (stored gitignored under `resumes/` with an extracted bank sidecar each;
 radio button picks the default). Every job row has a **Tailor** button:
 
-1. Paste the posting description (the tracker stores titles only, so one
-   paste from the listing is needed — prefilled with title/company).
+1. Paste the posting description (prefilled with title/company).
 2. **Run tailoring** — one LLM call (separate `tailor_*` daily budget in
    `config.yaml` → `feedback:`) selects/reorders/lightly rewords bullets
    from *your* bank. Contact details are stripped from the payload; facts
@@ -527,7 +552,9 @@ sites change something.
 Current default (`config.yaml` → `search.site_names`): `indeed`,
 `linkedin` (JobSpy), plus `jobstreet` and `glassdoor` (custom
 Playwright scrapers in `jobstreet.py` / `glassdoor.py`, since JobSpy has
-no JobStreet provider and its Glassdoor integration is bot-walled).
+no JobStreet provider and its Glassdoor integration is bot-walled),
+plus `trabajo` (plain-HTTP `trabajo.py` scraper for the ph.trabajo.org
+aggregator, verified 2026-09-24).
 `google` is disabled by default — JobSpy's Google parser currently
 returns zero rows upstream (see below); re-enable it if that gets fixed.
 
@@ -556,6 +583,9 @@ jobspy 1.1.82):
   browser search URL). One page (30 cards) per term per location with a
   cooldown between loads; cards carry no usable age so these skip the
   `hours_old` gate like company boards, and all other filters apply.
+- `trabajo`: ph.trabajo.org aggregator via plain HTTP (`trabajo.py`, no
+  browser — polite and cheap), verified 2026-09-24. Cards often carry
+  salary spans, which feed the salary normalizer directly.
 - `google`: global aggregator, sometimes finds PH SMBs Indeed misses, but
   currently returns **zero rows** (JobSpy's Google parser appears
   broken upstream) so it is **disabled in the default config** — listing
@@ -608,7 +638,3 @@ Kalibrr, Bossjob).
   `render_resume.py` (see [Resume tailoring](#resume-tailoring)). The old
   batch pipeline under `.archive-tailoring/` stays archived — nothing
   imports it.
-- Greenhouse/Lever/company-board direct scraping isn't wired up yet
-  (`config.yaml`'s `company_boards` section is a placeholder) — those
-  boards expose stabler JSON endpoints than LinkedIn/Indeed scraping if you
-  want that added.
