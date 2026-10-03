@@ -5,10 +5,38 @@ from fastapi import APIRouter, HTTPException
 
 from api import db
 from api.models import (FollowUpUpdate, HistoryEntry, Job, JobDetailsUpdate,
-                         JobStatusUpdate, ManualAddRequest, OfferUpdate,
-                         SalaryUpdate, StageUpdate)
+                         JobReinsert, JobStatusUpdate, ManualAddRequest,
+                         OfferUpdate, SalaryUpdate, StageUpdate)
 
 router = APIRouter()
+
+
+@router.post("/reinsert", response_model=Job)
+def reinsert_job(body: JobReinsert):
+    """Re-create a hard-deleted jobs row (undo of the Applied delete)."""
+    try:
+        row = db.reinsert_job(body.model_dump())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"reinsert failed: {e}")
+    if row is None:
+        raise HTTPException(status_code=400, detail="nothing to reinsert")
+    return row
+
+
+@router.delete("/{job_id}")
+def delete_job(job_id: int):
+    """Hard-delete one jobs row (mistaken manual-add / dead listing).
+
+    Status/stage history cascades. The dashboard sends the row snapshot
+    along for undo via POST /jobs/reinsert.
+    """
+    try:
+        gone = db.delete_job(job_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"delete failed: {e}")
+    if not gone:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"ok": True, "id": job_id}
 
 
 def _move_to_applied(cur, job_id: int, old_status, old_stage):

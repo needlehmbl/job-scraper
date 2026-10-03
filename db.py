@@ -760,3 +760,120 @@ def reinsert_filtered_job(row: dict, conn=None) -> dict | None:
     finally:
         if own:
             conn.close()
+
+
+def delete_job(job_id: int, conn=None) -> bool:
+    """Hard-delete one jobs row (status/stage history cascades).
+
+    Used by the Applied tab to remove mistaken manual-adds / dead
+    listings. Returns True when a row was removed.
+    """
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM jobs WHERE id = %s RETURNING id",
+                        (job_id,))
+            gone = cur.fetchone() is not None
+            conn.commit()
+            return gone
+    finally:
+        if own:
+            conn.close()
+
+
+def reinsert_job(row: dict, conn=None) -> dict | None:
+    """Re-create a hard-deleted jobs row (undo of Applied delete).
+
+    The snapshot carries content + status/stage; timestamps are fresh
+    (scraped now, status updated now, applied now iff APPLIED). URL
+    conflicts resolve to the existing row so a re-scrape that raced the
+    undo does not create a duplicate. Returns the new (or existing) row,
+    or None when the payload has no usable URL/title.
+    """
+    own = conn is None
+    if own:
+        conn = connect()
+    try:
+        import psycopg2.errors
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            url = ((row.get("url") or "").strip().lower().rstrip("/"))
+            title = (row.get("title") or "").strip()
+            if not url and not title:
+                return None
+            status = (row.get("status") or "NEW").strip() or "NEW"
+            stage = row.get("stage")
+            # Invariant: stage set ⟺ APPLIED. A snapshot claiming a stage
+            # on a non-APPLIED status drops the stage instead of breaking it.
+            if status != "APPLIED":
+                stage = None
+            from datetime import datetime, timezone
+            applied_at = (datetime.now(timezone.utc)
+                          if status == "APPLIED" else None)
+            params = (row.get("source") or "", title,
+                      row.get("company") or "", url,
+                      row.get("location"), row.get("date_posted"),
+                      row.get("description"), status, stage,
+                      row.get("score") or 0, row.get("score_reason") or "",
+                      row.get("follow_up_at"),
+                      row.get("offer_salary") or "",
+                      row.get("offer_benefits") or "",
+                      row.get("offer_pros") or "",
+                      row.get("offer_cons") or "",
+                      row.get("salary_raw") or "",
+                      row.get("salary_currency") or "",
+                      row.get("salary_min"), row.get("salary_max"),
+                      row.get("salary_interval") or "unknown",
+                      row.get("salary_monthly_min"),
+                      row.get("salary_monthly_max"),
+                      row.get("salary_display") or "",
+                      applied_at)
+            new_row = None
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO jobs
+                      (source, title, company, url, location, date_posted,
+                       description, status, stage, score, score_reason,
+                       follow_up_at, offer_salary, offer_benefits, offer_pros,
+                       offer_cons, salary_raw, salary_currency, salary_min,
+                       salary_max, salary_interval, salary_monthly_min,
+                       salary_monthly_max, salary_display, applied_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (url) WHERE url <> '' DO NOTHING
+                    RETURNING *
+                    """,
+                    params,
+                )
+                new_row = cur.fetchone()
+            except psycopg2.errors.UniqueViolation:
+                # jobs.url is a plain UNIQUE (unlike filtered's partial
+                # index), so an empty-URL snapshot collides instead of
+                # conflicting — roll back the failed INSERT and fall
+                # through to the title+company lookup below.
+                conn.rollback()
+            if new_row is None:
+                # Lost a race (re-scrape re-added the URL) or empty-URL
+                # insert — fall back to the existing row by URL, else by
+                # title+company when there is no URL to match on.
+                if url:
+                    cur.execute("SELECT * FROM jobs WHERE url = %s", (url,))
+                    new_row = cur.fetchone()
+                else:
+                    cur.execute(
+                        """
+                        SELECT * FROM jobs
+                        WHERE lower(title) = lower(%s)
+                          AND lower(coalesce(company, '')) = lower(%s)
+                        LIMIT 1
+                        """,
+                        (title, row.get("company") or ""),
+                    )
+                    new_row = cur.fetchone()
+            conn.commit()
+            return dict(new_row) if new_row else None
+    finally:
+        if own:
+            conn.close()

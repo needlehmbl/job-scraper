@@ -162,6 +162,39 @@ class FilteredReinsert(BaseModel):
     salary_display: str = ""
 
 
+class JobReinsert(BaseModel):
+    """Snapshot of a hard-deleted jobs row, for undo of Applied delete.
+
+    Timestamps (scraped_at/last_seen/status_updated_at/applied_at) are
+    regenerated server-side — the snapshot carries content + status/stage.
+    """
+
+    source: str = ""
+    title: str = ""
+    company: str = ""
+    url: str = ""
+    location: str | None = None
+    date_posted: date | None = None
+    description: str | None = None
+    status: str = "NEW"
+    stage: str | None = None
+    score: int = 0
+    score_reason: str = ""
+    follow_up_at: date | None = None
+    offer_salary: str = ""
+    offer_benefits: str = ""
+    offer_pros: str = ""
+    offer_cons: str = ""
+    salary_raw: str = ""
+    salary_currency: str = ""
+    salary_min: float | None = None
+    salary_max: float | None = None
+    salary_interval: str = "unknown"
+    salary_monthly_min: float | None = None
+    salary_monthly_max: float | None = None
+    salary_display: str = ""
+
+
 class ManualAddRequest(BaseModel):
     """Manual intake: one externally-found posting URL -> Applications.
 

@@ -329,7 +329,7 @@ function useDarkMode() {
   return [dark, setDark]
 }
 
-function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup }) {
+function ApplicationRow({ job, terms, onStage, onMoveBack, onExpire, onDelete, onChanged, onFollowup }) {
   const [open, setOpen] = useState(false)
   const [history, setHistory] = useState(null)
   const [salary, setSalary] = useState(job.offer_salary || '')
@@ -676,6 +676,20 @@ function ApplicationRow({ job, terms, onStage, onMoveBack, onChanged, onFollowup
                 className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800"
               >
                 ↩ Move back to Jobs
+              </button>
+              <button
+                onClick={() => onExpire && onExpire(job)}
+                title="Mark the listing expired (stays in Jobs under EXPIRED, undoable)"
+                className="rounded-lg px-2 py-1 text-xs text-neutral-500 hover:bg-neutral-200 dark:text-neutral-400 dark:hover:bg-neutral-800"
+              >
+                Mark expired
+              </button>
+              <button
+                onClick={() => onDelete && onDelete(job)}
+                title="Permanently delete this application (e.g. mistaken manual add — undoable)"
+                className="rounded-lg px-2 py-1 text-xs text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950"
+              >
+                Delete
               </button>
             </div>
           </td>
@@ -1386,6 +1400,23 @@ export default function App() {
         listHint = 'filtered'
         tabHint = 'filtered'
         setFilteredJobs((prev) => [row, ...prev.filter((f) => f.id !== row.id)])
+      } else if (a.kind === 'job-delete') {
+        // Applied delete undo: re-insert the snapshot (new id — the old
+        // row + its history are gone). APPLIED rows re-appear in
+        // Applications, anything else in Jobs.
+        const r = await fetch(`${API}/jobs/reinsert`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(a.snapshot),
+        })
+        if (!r.ok) throw new Error(`reinsert failed (${r.status})`)
+        const row = await r.json()
+        revealed = [row.id]
+        const isApplied = row.status === 'APPLIED'
+        listHint = isApplied ? 'applications' : 'jobs'
+        tabHint = isApplied ? 'applications' : 'jobs'
+        setJobs((prev) => [...prev.filter((j) => j.id !== row.id), row])
+        refreshStats()
       } else if (a.kind === 'bulk-dismiss') {
         // Bulk dismiss undo: re-insert every snapshot, most recent first so
         // the tab order matches the single-dismiss path.
@@ -1417,7 +1448,7 @@ export default function App() {
       await fetchAll()
     }
     setUndoBusy(false)
-  }, [lastAction, undoBusy, updateJobs, fetchAll, refreshJobs, jobs, dark])
+  }, [lastAction, undoBusy, updateJobs, fetchAll, refreshJobs, refreshStats, jobs, dark])
 
   const changeStatus = useCallback(
     async (job, nextStatus) => {
@@ -1657,6 +1688,62 @@ export default function App() {
       })
     },
     [deleteFiltered]
+  )
+
+  // Applied tab: hard-delete one jobs row (mistaken manual-add, dead
+  // listing). Snapshot doubles as the undo payload for POST /jobs/reinsert.
+  const deleteJob = useCallback(
+    async (job) => {
+      if (
+        !window.confirm(
+          `Permanently delete "${job.title || 'Untitled'}" @ ${job.company || '—'} from Applications? (Undo restores it.)`
+        )
+      )
+        return
+      const snapshot = {
+        source: job.source || '',
+        title: job.title || '',
+        company: job.company || '',
+        url: job.url || '',
+        location: job.location || null,
+        date_posted: job.date_posted || null,
+        description: job.description || null,
+        status: job.status || 'APPLIED',
+        stage: job.stage || null,
+        score: job.score ?? 0,
+        score_reason: job.score_reason || '',
+        follow_up_at: job.follow_up_at || null,
+        offer_salary: job.offer_salary || '',
+        offer_benefits: job.offer_benefits || '',
+        offer_pros: job.offer_pros || '',
+        offer_cons: job.offer_cons || '',
+        salary_raw: job.salary_raw || '',
+        salary_currency: job.salary_currency || '',
+        salary_min: job.salary_min ?? null,
+        salary_max: job.salary_max ?? null,
+        salary_interval: job.salary_interval || 'unknown',
+        salary_monthly_min: job.salary_monthly_min ?? null,
+        salary_monthly_max: job.salary_monthly_max ?? null,
+        salary_display: job.salary_display || '',
+      }
+      try {
+        const r = await fetch(`${API}/jobs/${job.id}`, { method: 'DELETE' })
+        if (!r.ok) throw new Error(`delete failed (${r.status})`)
+        recordAction({
+          kind: 'job-delete',
+          snapshot,
+          label: `Deleted "${job.title || 'Untitled'}" (#${job.id}) from Applications`,
+        })
+        setJobs((prev) => prev.filter((j) => j.id !== job.id))
+        await refreshJobs()
+        refreshStats()
+      } catch (e) {
+        console.error('job delete failed:', e)
+        toast.error(`Delete failed: ${e.message}`)
+        await fetchAll()
+      }
+    },
+    [fetchAll, refreshJobs, refreshStats, recordAction]
   )
 
   // Bulk dismiss for Filtered review: one confirm for the whole batch, then
@@ -3442,7 +3529,9 @@ function describeScrapeProgress(p) {
               <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
                 {appsPageRows.map((job) => (
                   <ApplicationRow key={job.id} job={job} terms={parsedSearch.terms}
-                    onStage={setStage} onMoveBack={moveBackToJobs} onChanged={fetchAll} onFollowup={setFollowup} />
+                    onStage={setStage} onMoveBack={moveBackToJobs}
+                    onExpire={(j) => changeStatus(j, 'EXPIRED')} onDelete={deleteJob}
+                    onChanged={fetchAll} onFollowup={setFollowup} />
                 ))}
               </tbody>
             </table>
