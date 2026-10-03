@@ -4,14 +4,14 @@
 # "Scrape new jobs" button (same pipeline as `venv/bin/python main.py`).
 #
 # Usage:
-#   ./run_and_open.sh
+#   ./scripts/run_and_open.sh
 #
 # Scheduled (timer) auto-open is intentionally NOT wired up anymore -- the
 # user scrapped scheduled fires. Run this manually whenever you want to
 # review postings right away.
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 API_URL="http://127.0.0.1:8000"
 DASH_URL="http://localhost:5173"

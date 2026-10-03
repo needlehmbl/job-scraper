@@ -1,9 +1,9 @@
 #!/bin/bash
 # One-time setup for macOS (Apple Silicon and Intel both work).
 # Run it from Terminal:
-#   ./setup-mac.sh
+#   ./scripts/setup-mac.sh
 set -e
-cd "$(dirname "$0")" || exit 1
+cd "$(dirname "$0")/.." || exit 1
 
 say() { printf '%s\n' "$*"; }
 
@@ -91,14 +91,14 @@ say ""
 if ! ./venv/bin/python setup_wizard.py --dir "$(pwd)"; then
   say ""
   say "The wizard didn't finish, so the shortcut wasn't created. Fix what it"
-  say "reported above, then run ./setup-mac.sh again -- nothing is lost."
+  say "reported above, then run ./scripts/setup-mac.sh again -- nothing is lost."
   exit 1
 fi
 
 # --- 5. Desktop shortcut --------------------------------------------------
 APPS="$HOME/Applications"
 mkdir -p "$APPS"
-cp -f JobScraper.command "$APPS/JobScraper.command"
+cp -f scripts/JobScraper.command "$APPS/JobScraper.command"
 chmod +x "$APPS/JobScraper.command"
 # Drop the quarantine flag so Finder opens it without a Gatekeeper prompt.
 xattr -cr "$APPS/JobScraper.command" 2>/dev/null || true

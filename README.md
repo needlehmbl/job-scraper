@@ -55,10 +55,10 @@ to postings from a browser tab.
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | File | `JobScraper-Setup-v*.exe` or `jobscraper-win64.zip` | `jobscraper-macos.tar.gz` | `jobscraper-linux.tar.gz` |
-| Setup | Double-click the `.exe`, or extract the zip | Extract, then run `./setup-mac.sh` once | Extract, then run `./setup.sh` once |
-| Start | Desktop shortcut or `JobScraper.exe` | `JobScraper.command` in `~/Applications` | `./run.sh`, or the app menu icon |
+| Setup | Double-click the `.exe`, or extract the zip | Extract, then run `./scripts/setup-mac.sh` once | Extract, then run `./scripts/setup.sh` once |
+| Start | Desktop shortcut or `JobScraper.exe` | `JobScraper.command` in `~/Applications` | `./scripts/run.sh`, or the app menu icon |
 | Arch | Windows x64 | Intel **and** Apple Silicon (one file) | Linux x64 |
-| Needs | Nothing — bundled | Nothing — `setup-mac.sh` installs Homebrew, Python, and Postgres for you | Docker |
+| Needs | Nothing — bundled | Nothing — `scripts/setup-mac.sh` installs Homebrew, Python, and Postgres for you | Docker |
 
 > **SmartScreen note (Windows):** the installer is unsigned, so Windows may
 > show "Windows protected your PC". Click **More info → Run anyway** — that
@@ -76,10 +76,10 @@ to postings from a browser tab.
 ```bash
 tar -xzf jobscraper-macos.tar.gz
 cd jobscraper-macos        # or wherever you extracted it
-./setup-mac.sh             # one-time: Python check, wizard, database, shortcut
+./scripts/setup-mac.sh             # one-time: Python check, wizard, database, shortcut
 ```
 
-`setup-mac.sh` installs everything the app needs, so there's nothing to
+`scripts/setup-mac.sh` installs everything the app needs, so there's nothing to
 install by hand first:
 
 1. **Homebrew** — the macOS package manager (only if you don't have it)
@@ -101,15 +101,15 @@ installer behaviour, not anything JobScraper is doing.
 ```bash
 tar -xzf jobscraper-linux.tar.gz
 cd jobscraper-linux          # or wherever you extracted it
-./setup.sh                   # wizard + desktop shortcut + database (needs Docker)
+./scripts/setup.sh                   # wizard + desktop shortcut + database (needs Docker)
 ```
 
-`setup.sh` runs the same beginner-friendly wizard: search terms, location,
+`scripts/setup.sh` runs the same beginner-friendly wizard: search terms, location,
 and job boards (prefilled with sensible defaults), an optional free
 OpenRouter key for smarter filtering (with **Test** and **Skip** buttons —
 the scraper works fine without one), then it installs what's missing and
 prepares the database. It also adds a JobScraper icon to your app menu.
-Stuck? `./setup.sh --check` diagnoses your install and explains each missing
+Stuck? `./scripts/setup.sh --check` diagnoses your install and explains each missing
 piece in plain language.
 
 ### Updating (keeps everything)
@@ -122,9 +122,9 @@ update:
 - *Windows (portable):* extract the new `jobscraper-win64.zip` over the
   old folder (keep your `.env` and data files when asked).
 - *macOS:* extract the new `jobscraper-macos.tar.gz` over the old folder,
-  then re-run `./setup-mac.sh` — it keeps your config, database, and
+  then re-run `./scripts/setup-mac.sh` — it keeps your config, database, and
   `.env`.
-- *Linux:* `./setup.sh --upgrade jobscraper-linux.tar.gz` — installs the
+- *Linux:* `./scripts/setup.sh --upgrade jobscraper-linux.tar.gz` — installs the
   new files, keeps your config and database.
 
 ### Developer setup (from source)
@@ -181,8 +181,8 @@ api/routes/filtered.py            GET /filtered, POST /filtered/{id}/restore, DE
 job-dashboard-api.service         systemd user unit: FastAPI on :8000 (GET /jobs, PATCH, POST /jobs/{id}/apply, /stats, /runs/latest, POST /scrape, GET /scrape/status)
 job-dashboard-web.service         systemd user unit: Vite + React + Tailwind dev server on :5173
 dashboard/                        Vite + React + Tailwind dev server on :5173
-run_and_open.sh                   ensure both servers, open the dashboard (open-only; scraping lives in the dashboard's Scrape button)
-stop.sh                           stop the API/dashboard + any leftover browser processes
+scripts/run_and_open.sh           ensure both servers, open the dashboard (open-only; scraping lives in the dashboard's Scrape button)
+scripts/stop.sh                     stop the API/dashboard + any leftover browser processes
 apply_helper.py                   opens a job URL in a real browser and prefills form fields
 notifier.py                       tails runs.log -> desktop notification (unchanged)
 extract_resume.py                 Harvard-style .docx parser -> structured resume bank YAML
@@ -203,13 +203,13 @@ does not contain them; the unit files live in `~/.config/systemd/user/`.
   `JobScraper.exe` in the portable folder). The app opens in your default
   browser automatically. To stop, use the power button in the dashboard
   header or just close the app window.
-- *Linux:* `./run.sh` starts everything and opens your default browser;
-  `./stop.sh` stops it.
+- *Linux:* `./scripts/run.sh` starts everything and opens your default browser;
+  `./scripts/stop.sh` stops it.
 
 Then scrape from the dashboard — no terminal needed:
 
 ```bash
-./run.sh   # beginner path (Docker) — or ./run_and_open.sh for the native/systemd path below
+./scripts/run.sh   # beginner path (Docker) — or ./scripts/run_and_open.sh for the native/systemd path below
 ```
 
 Scraping is done from the dashboard: open `http://localhost:5173` and hit
@@ -229,7 +229,7 @@ venv/bin/python main.py                # scrape into Postgres
 systemctl --user start job-dashboard-api job-dashboard-web   # or uvicorn / bun run dev directly
 ```
 
-`run_and_open.sh` is open-only: it ensures the API/dashboard servers are up (it starts the
+`scripts/run_and_open.sh` is open-only: it ensures the API/dashboard servers are up (it starts the
 systemd units if they're stopped, falling back to plain `nohup` processes if
 systemd is unavailable), then opens `http://localhost:5173` in your default
 browser. To scrape from a terminal instead of the dashboard button, run
@@ -240,16 +240,16 @@ To shut everything down (including any stray `apply_helper.py` / Playwright
 browser left over from manual CLI use):
 
 ```bash
-./stop.sh          # -> systemctl --user stop job-dashboard-api job-dashboard-web
+./scripts/stop.sh          # -> systemctl --user stop job-dashboard-api job-dashboard-web
 ```
 
 Both units are `Restart=always` services, so `kill`ing the processes by hand
-won't stick — use `stop.sh`, which stops the units themselves.
+won't stick — use `scripts/stop.sh`, which stops the units themselves.
 
 ### Scheduled runs (removed)
 
 The old `job-auto-apply.timer` (Mon/Wed/Fri 09:00) has been **disabled and
-unarmed** per request — no scheduled fires. `run_and_open.sh` is the manual
+unarmed** per request — no scheduled fires. `scripts/run_and_open.sh` is the manual
 entry point for opening the dashboard in a browser tab (scraping now lives
 behind the dashboard's **Scrape new jobs** button). The
 timer/notifier unit files still exist under `~/.config/systemd/user/` if you

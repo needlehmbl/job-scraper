@@ -160,7 +160,7 @@ def do_check():
     """Validate .env + config.yaml + DB, print each result, exit 1 on failure."""
     ok = True
     if not ENV_PATH.exists():
-        print("No .env yet -- run ./setup.sh")
+        print("No .env yet -- run ./scripts/setup.sh")
         return 1
     env = load_env()
     key = env.get("OPENROUTER_API_KEY", "")
@@ -348,7 +348,7 @@ def retry_prompt():
 
 def run_cli(install_dir):
     if not sys.stdin.isatty():
-        print("This wizard needs a terminal. Run it with: ./setup.sh")
+        print("This wizard needs a terminal. Run it with: ./scripts/setup.sh")
         return 1
     print("=== Welcome to JobScraper ===")
     print("Finds junior developer job posts for you. Takes about 5 minutes:")
@@ -430,18 +430,18 @@ def run_cli(install_dir):
     install_dir.mkdir(parents=True, exist_ok=True)
 
     if not ensure_deps_cli(install_dir):
-        print("Setup stopped -- run ./setup.sh again when ready.")
+        print("Setup stopped -- run ./scripts/setup.sh again when ready.")
         return 1
 
     print("\n--- Done! ---")
-    print("Open JobScraper with ./run.sh (it opens in your default browser).")
+    print("Open JobScraper with ./scripts/run.sh (it opens in your default browser).")
     return 0
 
 
 def run_gui(install_dir):
     """Tkinter wizard: 6 pages with Back/Next per spec section 4."""
     if tk is None:
-        print("No graphical toolkit found -- run this wizard with: ./setup.sh")
+        print("No graphical toolkit found -- run this wizard with: ./scripts/setup.sh")
         return 1
     env = load_env()
     cfg = load_config()

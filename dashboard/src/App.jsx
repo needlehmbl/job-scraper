@@ -3857,7 +3857,7 @@ function describeScrapeProgress(p) {
 
       {updateInfo?.update_available && (
         <footer className="sticky bottom-0 z-10 border-t border-amber-200 bg-amber-50 px-6 py-2.5 text-center text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-          Update available: {updateInfo.latest} &mdash; run setup.sh --upgrade (Linux) or re-run the installer (Windows).
+          Update available: {updateInfo.latest} &mdash; run scripts/setup.sh --upgrade (Linux) or re-run the installer (Windows).
         </footer>
       )}
     </div>

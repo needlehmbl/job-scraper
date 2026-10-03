@@ -69,7 +69,7 @@ missing=0
 for required in \
   requirements.txt Dockerfile docker-compose.yml .dockerignore .env.example \
   api/main.py db.py main.py notifier.py config.yaml schema.sql \
-  run.sh stop.sh setup.sh setup_wizard.py launcher.py JobScraper.desktop \
+  scripts/run.sh scripts/stop.sh scripts/setup.sh setup_wizard.py launcher.py scripts/JobScraper.desktop \
   scraper.py pipeline.py locations.py dedupe.py manual_fetch.py \
   scrapers/__init__.py scrapers/playwright/__init__.py \
   scrapers/playwright/common.py scrapers/playwright/jobstreet.py \

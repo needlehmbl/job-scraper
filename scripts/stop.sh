@@ -7,11 +7,11 @@
 # the next `systemctl --user start` / login).
 #
 # Usage:
-#   ./stop.sh                     # stop everything
-#   ./stop.sh --keep-log          # same, but leave api.log/dashboard.log alone
+#   ./scripts/stop.sh                     # stop everything
+#   ./scripts/stop.sh --keep-log          # same, but leave api.log/dashboard.log alone
 set -e
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
 stopped=0
 
