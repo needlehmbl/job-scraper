@@ -150,8 +150,19 @@ class GrabJobsScraper:
                                                "cf-turnstile",
                                                "Attention Required",
                                                "cf-challenge")):
-                        print(f"[grabjobs] challenge on '{term}' page {page_no} -- waiting 8s")
-                        self._page.wait_for_timeout(8000)
+                        # Cloudflare "Just a moment" often needs more than
+                        # one wait cycle in headless Chromium (verified
+                        # 2026-10-03: still challenged after 8s). Wait
+                        # 15s, reload once, then wait again before giving
+                        # the selectors a chance.
+                        print(f"[grabjobs] challenge on '{term}' page {page_no} -- waiting 15s + reload")
+                        self._page.wait_for_timeout(15000)
+                        try:
+                            self._page.reload(timeout=self.timeout_ms,
+                                              wait_until="domcontentloaded")
+                        except Exception:
+                            pass
+                        self._page.wait_for_timeout(10000)
                 except Exception:
                     pass
                 try:

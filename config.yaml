@@ -56,7 +56,10 @@ search:
   # `remoteok` routes to remoteok.py (remoteok.com/api feed).
   # `jora` / `kalibrr` / `grabjobs` route to the Playwright scrapers in
   # scrapers/playwright/ (same headless-Chromium pattern as jobstreet.py;
-  # Cloudflare-walled or JS-heavy, v1 selectors best-effort).
+  # Cloudflare-walled or JS-heavy, v1 selectors best-effort). All three are
+  # currently commented out below (jora: dead redirect; kalibrr: wrong
+  # search URL; grabjobs: needs a banked storage_state session) -- see
+  # the per-source NOTEs. Re-enable individually once fixed.
   # Google Jobs currently returns
   # zero rows upstream (JobSpy parser broken) -- the scrape warnings flag
   # it if so.
@@ -67,9 +70,26 @@ search:
     - "glassdoor"
     - "trabajo"
     - "remoteok"
-    - "jora"
-    - "kalibrr"
-    - "grabjobs"
+    # NOTE (2026-10-03): "jora" disabled -- ph.jora.com now redirects to
+    # ph.jobstreet.com (Seek consolidation, verified live: search URL lands
+    # on Jobstreet homepage, 0 cards). Duplicate coverage with "jobstreet"
+    # above, so listing it only burns 16 browser searches per run.
+    # Re-enable only if Jora PH returns as a standalone board.
+    # - "jora"
+    # NOTE (2026-10-03): "kalibrr" disabled -- SEARCH_URL
+    # (/c/job-board?k=..&l=..&p=..) lands on a "Page not available"
+    # browse page with 0 cards (verified live). Needs a corrected
+    # search-URL + selector pass before re-enabling.
+    # - "kalibrr"
+    # NOTE (2026-10-03): "grabjobs" disabled -- grabjobs.co sits behind a
+    # Cloudflare "Just a moment" challenge that headless Chromium cannot
+    # clear on its own (verified live: still challenged after 15s + reload,
+    # 0 cards). Re-enable after banking a session like jobstreet.json:
+    # run a headed Playwright session once, clear the challenge manually,
+    # save storage_state/grabjobs.json, then uncomment. The challenge
+    # retry in grabjobs.py already handles transient walls once a session
+    # exists.
+    # - "grabjobs"
     # NOTE: "google" disabled -- JobSpy's Google parser returns 0 rows
     # upstream (broken), so listing it only burns 16 searches per run.
     # Re-enable when the parser is fixed.

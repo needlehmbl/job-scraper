@@ -447,6 +447,7 @@ def _run_jobstreet_block(s: dict, terms: list):
     """JobStreet browser block in a worker thread. Returns (frames, notes)."""
     set_progress("scraping JobStreet (browser)", source="jobstreet",
                  term=f"{len(terms)} search terms")
+    n = len(terms)
     try:
         js_df = jobstreet.scrape_jobstreet(
             terms,
@@ -461,12 +462,12 @@ def _run_jobstreet_block(s: dict, terms: list):
                   "'venv/bin/python -m playwright install chromium' to fix.")
         bump_progress(1, phase="scraping JobStreet (browser)",
                       source="jobstreet", term="failed")
-        return [], [("jobstreet", 0, str(e))]
+        return [], [("jobstreet", 0, str(e), n)]
     bump_progress(1, phase="scraping JobStreet (browser)",
                   source="jobstreet", term="done")
     if js_df is not None and not js_df.empty:
-        return [js_df], [("jobstreet", len(js_df), "")]
-    return [], [("jobstreet", 0, "")]
+        return [js_df], [("jobstreet", len(js_df), "", n)]
+    return [], [("jobstreet", 0, "", n)]
 
 
 def _run_glassdoor_block(cfg: dict, s: dict, terms: list):
@@ -501,6 +502,7 @@ def _run_trabajo_block(s: dict, terms: list):
     """Trabajo.org aggregator block in a worker thread. Returns (frames, notes)."""
     set_progress("scraping Trabajo.org", source="trabajo",
                  term=f"{len(terms)} search terms")
+    n = len(terms)
     try:
         t_df = trabajo.scrape_trabajo(
             terms,
@@ -512,18 +514,19 @@ def _run_trabajo_block(s: dict, terms: list):
         print(f"[scraper] WARNING: trabajo scrape failed: {e}")
         bump_progress(1, phase="scraping Trabajo.org",
                       source="trabajo", term="failed")
-        return [], [("trabajo", 0, str(e))]
+        return [], [("trabajo", 0, str(e), n)]
     bump_progress(1, phase="scraping Trabajo.org",
                   source="trabajo", term="done")
     if t_df is not None and not t_df.empty:
-        return [t_df], [("trabajo", len(t_df), "")]
-    return [], [("trabajo", 0, "")]
+        return [t_df], [("trabajo", len(t_df), "", n)]
+    return [], [("trabajo", 0, "", n)]
 
 
 def _run_remoteok_block(s: dict, terms: list):
     """RemoteOK feed block in a worker thread. Returns (frames, notes)."""
     set_progress("scraping RemoteOK", source="remoteok",
                  term=f"{len(terms)} search terms")
+    n = len(terms)
     try:
         r_df = remoteok.scrape_remoteok(
             terms,
@@ -534,19 +537,20 @@ def _run_remoteok_block(s: dict, terms: list):
         print(f"[scraper] WARNING: remoteok scrape failed: {e}")
         bump_progress(1, phase="scraping RemoteOK",
                       source="remoteok", term="failed")
-        return [], [("remoteok", 0, str(e))]
+        return [], [("remoteok", 0, str(e), n)]
     bump_progress(1, phase="scraping RemoteOK",
                   source="remoteok", term="done")
     if r_df is not None and not r_df.empty:
         r_df["_loose_location"] = True
-        return [r_df], [("remoteok", len(r_df), "")]
-    return [], [("remoteok", 0, "")]
+        return [r_df], [("remoteok", len(r_df), "", n)]
+    return [], [("remoteok", 0, "", n)]
 
 
 def _run_browser_block(label: str, scrape_fn, s: dict, terms: list):
     """Generic Playwright term-block (jora/kalibrr/grabjobs)."""
     set_progress(f"scraping {label} (browser)", source=label,
                  term=f"{len(terms)} search terms")
+    n = len(terms)
     try:
         df = scrape_fn(
             terms,
@@ -561,12 +565,12 @@ def _run_browser_block(label: str, scrape_fn, s: dict, terms: list):
                   "'venv/bin/python -m playwright install chromium' to fix.")
         bump_progress(1, phase=f"scraping {label} (browser)",
                       source=label, term="failed")
-        return [], [(label, 0, str(e))]
+        return [], [(label, 0, str(e), n)]
     bump_progress(1, phase=f"scraping {label} (browser)",
                   source=label, term="done")
     if df is not None and not df.empty:
-        return [df], [(label, len(df), "")]
-    return [], [(label, 0, "")]
+        return [df], [(label, len(df), "", n)]
+    return [], [(label, 0, "", n)]
 
 
 def _run_jora_block(s: dict, terms: list):
@@ -637,9 +641,9 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     exp_drops: list = []
     stats: dict = {}  # source -> {"terms", "rows", "errors"}
 
-    def note(source: str, rows: int = 0, error: str = ""):
+    def note(source: str, rows: int = 0, error: str = "", count: int = 1):
         e = stats.setdefault(source, {"terms": 0, "rows": 0, "errors": []})
-        e["terms"] += 1
+        e["terms"] += count
         e["rows"] += rows
         if error and error not in e["errors"]:
             e["errors"].append(error[:160])
@@ -702,8 +706,9 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     for name in ("jobspy", "jobstreet", "glassdoor", "trabajo", "remoteok", "jora", "kalibrr", "grabjobs", "boards"):
         frames, notes = blocks.get(name, ([], []))
         all_frames.extend(frames)
-        for source, rows, error in notes:
-            note(source, rows=rows, error=error)
+        for source, rows, error, *rest in notes:
+            note(source, rows=rows, error=error,
+                 count=rest[0] if rest else 1)
 
     last_source_report = stats
     for source, st in stats.items():
