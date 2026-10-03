@@ -81,7 +81,7 @@ def site_from_url(url: str) -> str:
         return ""
     host = host[4:] if host.startswith("www.") else host
     for needle in ("indeed", "linkedin", "jobstreet", "glassdoor",
-                   "trabajo", "greenhouse", "lever"):
+                   "trabajo", "greenhouse", "lever", "ashby", "remoteok"):
         if needle in host:
             return needle
     return host or ""

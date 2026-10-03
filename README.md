@@ -171,8 +171,8 @@ with `demo/assemble.sh` — see the script headers.
 venv/bin/python main.py          scrape -> Postgres (jobs, scrape_runs)
 pipeline.py                     shared scrape pipeline (CLI + API button use the same code)
 greenhouse.py / lever.py          direct company-board scrapers (public JSON APIs, no browser) — slugs in `company_boards`
-jobstreet.py / glassdoor.py       Playwright/Chromium scrapers (no jobspy provider / bot-walled API) — locations in `search.location` / `glassdoor_locations`
-trabajo.py                      ph.trabajo.org aggregator (plain HTTP + BeautifulSoup, no browser) — in default `site_names`, cards often carry salary spans
+scrapers/playwright/jobstreet.py + glassdoor.py (+ jora/kalibrr/grabjobs)  Playwright/Chromium scrapers (no jobspy provider / bot-walled API) — locations in `search.location` / `glassdoor_locations`
+scrapers/feeds/trabajo.py (+ remoteok.py)  ph.trabajo.org aggregator (plain HTTP + BeautifulSoup, no browser) — in default `site_names`, cards often carry salary spans
 salary.py                       salary-range capture + normalization to monthly estimates (`salary_display`, e.g. `PHP 42k–60k/mo`)
 manual_fetch.py                 plain-HTTP + headless-Chromium fallback fetcher (manual add, backfill, description healing)
 backfill_details.py             revisit stored URLs to fill missing descriptions + salaries (resume-safe, `--limit` batches)
@@ -551,9 +551,9 @@ sites change something.
 
 Current default (`config.yaml` → `search.site_names`): `indeed`,
 `linkedin` (JobSpy), plus `jobstreet` and `glassdoor` (custom
-Playwright scrapers in `jobstreet.py` / `glassdoor.py`, since JobSpy has
+Playwright scrapers in `scrapers/playwright/jobstreet.py` / `scrapers/playwright/glassdoor.py`, since JobSpy has
 no JobStreet provider and its Glassdoor integration is bot-walled),
-plus `trabajo` (plain-HTTP `trabajo.py` scraper for the ph.trabajo.org
+plus `trabajo` (plain-HTTP `scrapers/feeds/trabajo.py` scraper for the ph.trabajo.org
 aggregator, verified 2026-09-24).
 `google` is disabled by default — JobSpy's Google parser currently
 returns zero rows upstream (see below); re-enable it if that gets fixed.
@@ -575,7 +575,7 @@ Coverage notes for a Metro Manila search (verified live 2026-09-21,
 jobspy 1.1.82):
 
 - `glassdoor`: covered by a dedicated Playwright scraper
-  (`glassdoor.py`), since jobspy's Glassdoor integration is bot-walled
+  (`scrapers/playwright/glassdoor.py`), since jobspy's Glassdoor integration is bot-walled
   (no PH domain + 403 on its location API, verified 2026-09-21). Passive
   result-page loads from a home IP pass; the module never touches the
   search form (that triggers a challenge) and resolves locations via
@@ -583,7 +583,7 @@ jobspy 1.1.82):
   browser search URL). One page (30 cards) per term per location with a
   cooldown between loads; cards carry no usable age so these skip the
   `hours_old` gate like company boards, and all other filters apply.
-- `trabajo`: ph.trabajo.org aggregator via plain HTTP (`trabajo.py`, no
+- `trabajo`: ph.trabajo.org aggregator via plain HTTP (`scrapers/feeds/trabajo.py`, no
   browser — polite and cheap), verified 2026-09-24. Cards often carry
   salary spans, which feed the salary normalizer directly.
 - `google`: global aggregator, sometimes finds PH SMBs Indeed misses, but
@@ -613,7 +613,7 @@ validated 2026-09-20: `moneysmart` + `perform-careers` (Greenhouse),
 use a looser location gate (bare `Philippines` / remote-PH passes; named
 non-NCR cities still fail) — the full keyword + experience + learner
 filters still apply downstream. For fully custom career pages, add
-PH-specific Playwright scrapers in the style of `jobstreet.py` (e.g.
+PH-specific Playwright scrapers in the style of `scrapers/playwright/jobstreet.py` (now `scrapers/playwright/jora.py`, `kalibrr.py`, `grabjobs.py`; e.g.
 Kalibrr, Bossjob).
 
 ## Notes / limits

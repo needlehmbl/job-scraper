@@ -3,13 +3,16 @@ Scrapes job postings across configured sites/terms using python-jobspy,
 applies keyword + experience filters, and returns a deduplicated DataFrame.
 
 JobStreet is not supported by jobspy, so it is handled separately by
-jobstreet.py (headless Chromium); Glassdoor's jobspy integration is
-bot-walled, so glassdoor.py renders its search pages the same way;
-Trabajo.org is an aggregator with plain server-rendered HTML, so
-trabajo.py pulls it with requests/BeautifulSoup (no browser);
-direct company boards (Greenhouse/Lever
-JSON APIs) are handled by greenhouse.py / lever.py. This module merges all
-frames in.
+scrapers.playwright.jobstreet (headless Chromium); Glassdoor's jobspy
+integration is bot-walled, so scrapers.playwright.glassdoor renders its
+search pages the same way; Jora/GrabJobs are Cloudflare-walled and
+Kalibrr is JS-heavy, so scrapers.playwright.jora/grabjobs/kalibrr render
+them the same way; Trabajo.org is an aggregator with plain
+server-rendered HTML, so scrapers.feeds.trabajo pulls it with
+requests/BeautifulSoup (no browser); RemoteOK is a public JSON feed
+handled by scrapers.feeds.remoteok (no browser); direct company boards
+(Greenhouse/Lever/Ashby JSON APIs) are handled by scrapers.boards. This
+module merges all frames in.
 """
 import re
 import threading
@@ -20,12 +23,17 @@ import yaml
 import pandas as pd
 from jobspy import scrape_jobs
 
-import glassdoor
-import greenhouse
-import jobstreet
-import lever
-import trabajo
-from locations import is_metro_manila, is_ph_or_metro
+from scrapers.playwright import glassdoor as glassdoor
+from scrapers.boards import greenhouse as greenhouse
+from scrapers.playwright import jobstreet as jobstreet
+from scrapers.boards import lever as lever
+from scrapers.feeds import remoteok as remoteok
+from scrapers.boards import ashby as ashby
+from scrapers.feeds import trabajo as trabajo
+from scrapers.playwright import jora as jora
+from scrapers.playwright import kalibrr as kalibrr
+from scrapers.playwright import grabjobs as grabjobs
+from locations import is_metro_manila, is_ph_or_metro, is_remote_location
 
 # Last scrape's experience-sift drops, filled by apply_keyword_filters
 # (keys: title/company/location/job_url/site/description/date_posted/
@@ -330,7 +338,7 @@ def normalize_url(url) -> str:
 # term x site searches and the four source blocks run in threads. Filters
 # are untouched -- this only overlaps waiting, never skips work.
 _JOBSPY_WORKERS = 6
-_SOURCE_WORKERS = 5
+_SOURCE_WORKERS = 9
 
 # Per-site throttle for jobspy calls. 2026-09-22: 6-wide parallel
 # LinkedIn searches drew "too many 429" rate-limiting (sequential runs
@@ -512,10 +520,75 @@ def _run_trabajo_block(s: dict, terms: list):
     return [], [("trabajo", 0, "")]
 
 
+def _run_remoteok_block(s: dict, terms: list):
+    """RemoteOK feed block in a worker thread. Returns (frames, notes)."""
+    set_progress("scraping RemoteOK", source="remoteok",
+                 term=f"{len(terms)} search terms")
+    try:
+        r_df = remoteok.scrape_remoteok(
+            terms,
+            max_results=s.get("results_wanted", 50),
+            hours_old=s.get("hours_old"),
+        )
+    except Exception as e:
+        print(f"[scraper] WARNING: remoteok scrape failed: {e}")
+        bump_progress(1, phase="scraping RemoteOK",
+                      source="remoteok", term="failed")
+        return [], [("remoteok", 0, str(e))]
+    bump_progress(1, phase="scraping RemoteOK",
+                  source="remoteok", term="done")
+    if r_df is not None and not r_df.empty:
+        r_df["_loose_location"] = True
+        return [r_df], [("remoteok", len(r_df), "")]
+    return [], [("remoteok", 0, "")]
+
+
+def _run_browser_block(label: str, scrape_fn, s: dict, terms: list):
+    """Generic Playwright term-block (jora/kalibrr/grabjobs)."""
+    set_progress(f"scraping {label} (browser)", source=label,
+                 term=f"{len(terms)} search terms")
+    try:
+        df = scrape_fn(
+            terms,
+            s["location"],
+            max_results=s.get("results_wanted", 50),
+            hours_old=s.get("hours_old"),
+        )
+    except Exception as e:
+        print(f"[scraper] WARNING: {label} scrape failed: {e}")
+        if "Executable doesn't exist" in str(e):
+            print("[scraper] HINT: Playwright's browser build is missing -- run "
+                  "'venv/bin/python -m playwright install chromium' to fix.")
+        bump_progress(1, phase=f"scraping {label} (browser)",
+                      source=label, term="failed")
+        return [], [(label, 0, str(e))]
+    bump_progress(1, phase=f"scraping {label} (browser)",
+                  source=label, term="done")
+    if df is not None and not df.empty:
+        return [df], [(label, len(df), "")]
+    return [], [(label, 0, "")]
+
+
+def _run_jora_block(s: dict, terms: list):
+    """Jora browser block in a worker thread. Returns (frames, notes)."""
+    return _run_browser_block("jora", jora.scrape_jora, s, terms)
+
+
+def _run_kalibrr_block(s: dict, terms: list):
+    """Kalibrr browser block in a worker thread. Returns (frames, notes)."""
+    return _run_browser_block("kalibrr", kalibrr.scrape_kalibrr, s, terms)
+
+
+def _run_grabjobs_block(s: dict, terms: list):
+    """GrabJobs browser block in a worker thread. Returns (frames, notes)."""
+    return _run_browser_block("grabjobs", grabjobs.scrape_grabjobs, s, terms)
+
+
 def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
-    """Greenhouse/Lever board pulls. Returns (frames, notes)."""
+    """Greenhouse/Lever/Ashby board pulls. Returns (frames, notes)."""
     frames, notes = [], []
-    for mod, label in ((greenhouse, "greenhouse"), (lever, "lever")):
+    for mod, label in ((greenhouse, "greenhouse"), (lever, "lever"),
+                       (ashby, "ashby")):
         slugs = (cfg.get("company_boards") or {}).get(label, [])
         if not slugs:
             continue
@@ -529,8 +602,14 @@ def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
                     hours_old=None,
                     seen_urls=seen_urls,
                 )
-            else:
+            elif label == "lever":
                 b_df = mod.scrape_lever(
+                    slugs,
+                    max_results=s.get("results_wanted", 50),
+                    hours_old=None,
+                )
+            else:
+                b_df = mod.scrape_ashby(
                     slugs,
                     max_results=s.get("results_wanted", 50),
                     hours_old=None,
@@ -546,7 +625,7 @@ def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
         elif b_df is not None:
             notes.append((label, 0, ""))
     bump_progress(1, phase="scraping company boards",
-                  source="greenhouse/lever", term="done")
+                  source="greenhouse/lever/ashby", term="done")
     return frames, notes
 
 
@@ -566,13 +645,18 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
             e["errors"].append(error[:160])
 
     # jobspy only knows its own providers; JobStreet and Glassdoor are
-    # scraped by jobstreet.py / glassdoor.py (headless Chromium) and
-    # Trabajo.org by trabajo.py (plain HTTP -- aggregator HTML).
+    # scraped by jobstreet.py / glassdoor.py (headless Chromium),
+    # Trabajo.org by trabajo.py (plain HTTP -- aggregator HTML) and
+    # RemoteOK by remoteok.py (public JSON feed -- worldwide remote).
     sites = s.get("site_names", ["indeed", "linkedin"])
-    jobspy_sites = [x for x in sites if x not in ("jobstreet", "glassdoor", "trabajo")]
+    jobspy_sites = [x for x in sites if x not in ("jobstreet", "glassdoor", "trabajo", "remoteok", "jora", "kalibrr", "grabjobs")]
     use_jobstreet = "jobstreet" in sites
     use_glassdoor = "glassdoor" in sites
     use_trabajo = "trabajo" in sites
+    use_remoteok = "remoteok" in sites
+    use_jora = "jora" in sites
+    use_kalibrr = "kalibrr" in sites
+    use_grabjobs = "grabjobs" in sites
     terms = s["search_terms"]
 
     # Progress total: one step per jobspy term x site search, one per
@@ -580,14 +664,17 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     # The dashboard polls this via GET /scrape/status.
     _total = (len(terms) * len(jobspy_sites)
               + int(use_jobstreet) + int(use_glassdoor)
-              + int(use_trabajo) + 1 + 3)
+              + int(use_trabajo) + int(use_remoteok)
+              + int(use_jora) + int(use_kalibrr) + int(use_grabjobs)
+              + 1 + 3)
     reset_progress(_total, phase="starting scrape")
 
     # All source blocks are independent I/O-bound work (HTTP waits,
     # browser page loads, Glassdoor cooldown sleeps), so they run
     # concurrently. Frames merge in fixed order (jobspy, jobstreet,
-    # glassdoor, trabajo, boards) and every note() still happens on this thread,
-    # so stats, warnings and within-run dedupe behave exactly as before.
+    # glassdoor, trabajo, remoteok, jora, kalibrr, grabjobs, boards) and
+    # every note() still happens on this thread, so stats, warnings and
+    # within-run dedupe behave exactly as before.
     blocks: dict = {}
     with ThreadPoolExecutor(max_workers=_SOURCE_WORKERS) as pool:
         futs = {}
@@ -599,12 +686,20 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
             futs[pool.submit(_run_glassdoor_block, cfg, s, terms)] = "glassdoor"
         if use_trabajo:
             futs[pool.submit(_run_trabajo_block, s, terms)] = "trabajo"
+        if use_remoteok:
+            futs[pool.submit(_run_remoteok_block, s, terms)] = "remoteok"
+        if use_jora:
+            futs[pool.submit(_run_jora_block, s, terms)] = "jora"
+        if use_kalibrr:
+            futs[pool.submit(_run_kalibrr_block, s, terms)] = "kalibrr"
+        if use_grabjobs:
+            futs[pool.submit(_run_grabjobs_block, s, terms)] = "grabjobs"
         futs[pool.submit(_run_boards_block, cfg, s, seen_urls)] = "boards"
         for f in as_completed(futs):
             blocks[futs[f]] = f.result()
             set_progress(f"waiting on sources ({len(blocks)}/{len(futs)} blocks done)",
                          source=futs[f], detail="merging results")
-    for name in ("jobspy", "jobstreet", "glassdoor", "trabajo", "boards"):
+    for name in ("jobspy", "jobstreet", "glassdoor", "trabajo", "remoteok", "jora", "kalibrr", "grabjobs", "boards"):
         frames, notes = blocks.get(name, ([], []))
         all_frames.extend(frames)
         for source, rows, error in notes:
@@ -630,7 +725,8 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     # cross-link fingerprint (normalized company|title) so the same
     # listing scraped with a different job ID / board URL collapses to
     # one row. First-seen wins (frames merge jobspy, jobstreet,
-    # glassdoor, trabajo, boards in fixed order).
+    # glassdoor, trabajo, remoteok, jora, kalibrr, grabjobs, boards in
+    # fixed order).
     if "job_url" in combined.columns:
         combined = combined[combined["job_url"].notna() & combined["job_url"].ne("")]
         combined["_urlkey"] = combined["job_url"].map(normalize_url)
@@ -714,11 +810,16 @@ def apply_keyword_filters(df: pd.DataFrame, s: dict,
     mask = df["title"].apply(title_ok) & df["company"].apply(company_ok)
     if "location" in df.columns:
         def loc_ok(row) -> bool:
+            loc = row.get("location", "")
+            # Remote-friendly scope: worldwide-remote markers pass from
+            # any source (RemoteOK feed, Ashby remote-first boards).
+            if is_remote_location(loc):
+                return True
             # Curated company boards get the looser PH gate (bare
             # "Philippines" passes); open board searches stay strict.
             if row.get("_loose_location") is True:
-                return is_ph_or_metro(row.get("location", ""))
-            return is_metro_manila(row.get("location", ""))
+                return is_ph_or_metro(loc)
+            return is_metro_manila(loc)
         mask = mask & df.apply(loc_ok, axis=1)
     if "description" in df.columns:
         exp_mask = df["description"].apply(experience_ok)

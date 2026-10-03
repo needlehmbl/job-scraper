@@ -23,7 +23,8 @@ PAGE_SIZE = 30
 # Login once via `python -m jobstreet --login` (headed window) and the
 # file below is created. Subsequent scrapes load it if present.
 import pathlib as _pathlib
-DEFAULT_STORAGE_STATE = _pathlib.Path(__file__).parent / "storage_state" / "jobstreet.json"
+DEFAULT_STORAGE_STATE = (_pathlib.Path(__file__).parent.parent.parent
+                         / "storage_state" / "jobstreet.json")
 
 _EXTRACT_JS = """
 els => els.map(a => {
@@ -254,7 +255,8 @@ if __name__ == "__main__":
     if "--login" in _sys.argv or "--login-profile" in _sys.argv:
         import pathlib as _plogin
         import shutil as _shutil
-        _login_path = _plogin.Path(__file__).parent / "storage_state" / "jobstreet.json"
+        _login_path = (_plogin.Path(__file__).parent.parent.parent
+                       / "storage_state" / "jobstreet.json")
         _login_path.parent.mkdir(parents=True, exist_ok=True)
         # --login-profile: copy live Chromium profile (already logged in via regular browser) and export storage_state.
         # Use this when Google OAuth popup is blocked in automation. No Google sign-in needed in Playwright.

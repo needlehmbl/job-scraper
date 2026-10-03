@@ -46,12 +46,17 @@ search:
 
   # JobSpy boards (indeed/linkedin/google) + custom JobStreet and
   # Glassdoor scrapers (headless Chromium) + Trabajo.org aggregator
-  # (trabajo.py, plain HTTP -- no browser). ZipRecruiter is US/CA-only;
+  # (trabajo.py, plain HTTP -- no browser) + RemoteOK feed (remoteok.py,
+  # public JSON -- worldwide remote, no browser). ZipRecruiter is US/CA-only;
   # bayt/naukri/bdjobs are Middle East/India/Bangladesh-focused -- all
   # skipped for a Metro Manila search. Glassdoor's jobspy integration is
   # bot-walled (verified 2026-09-21), so `glassdoor` here routes to
   # glassdoor.py instead -- keep it listed. `trabajo` routes to
   # trabajo.py (ph.trabajo.org aggregator, verified 2026-09-24).
+  # `remoteok` routes to remoteok.py (remoteok.com/api feed).
+  # `jora` / `kalibrr` / `grabjobs` route to the Playwright scrapers in
+  # scrapers/playwright/ (same headless-Chromium pattern as jobstreet.py;
+  # Cloudflare-walled or JS-heavy, v1 selectors best-effort).
   # Google Jobs currently returns
   # zero rows upstream (JobSpy parser broken) -- the scrape warnings flag
   # it if so.
@@ -61,6 +66,10 @@ search:
     - "jobstreet"
     - "glassdoor"
     - "trabajo"
+    - "remoteok"
+    - "jora"
+    - "kalibrr"
+    - "grabjobs"
     # NOTE: "google" disabled -- JobSpy's Google parser returns 0 rows
     # upstream (broken), so listing it only burns 16 searches per run.
     # Re-enable when the parser is fixed.
@@ -198,13 +207,13 @@ feedback:
   max_ai_tokens_per_day: 100000
   usage_state_path: "usage_state.json"
 
-# Direct company career boards (Tier 1): public Greenhouse/Lever JSON APIs,
-# no browser needed. Slug = the board path (boards.greenhouse.io/<slug>,
-# lever.co/<slug>). Plain list uses the slug as the company name; mapping
-# form sets a display name, e.g. greenhouse: {"acme": "Acme Corp"}.
+# Direct company career boards (Tier 1): public Greenhouse/Lever/Ashby JSON
+# APIs, no browser needed. Slug = the board path (boards.greenhouse.io/<slug>,
+# lever.co/<slug>, jobs.ashbyhq.com/<slug>). Plain list uses the slug as the
+# company name; mapping form sets a display name, e.g. greenhouse: {"acme": "Acme Corp"}.
 # Board pulls ignore `hours_old` (career pages list evergreen postings;
 # dedupe keeps re-scrapes clean) and use a looser location gate (bare
-# "Philippines" / remote-PH passes; named non-NCR cities still fail).
+# "Philippines" / remote passes; named non-NCR cities still fail).
 # Slugs below were validated live 2026-09-20; a dead board only logs a
 # warning and never breaks the rest of the scrape.
 company_boards:
@@ -216,6 +225,10 @@ company_boards:
     # - "cteph"           # remote-PH incl. DevOps roles
   lever:
     - "coins"             # Coins.ph, Taguig
+  ashby:
+    - "buffer"            # remote-first, "Remote" passes the remote gate
+    # - "linear"          # remote-first but region-locked (Europe/NA) -- 0 PH rows today
+    # - "notion"          # large board, region-locked -- 0 PH rows today
 
 # Glassdoor search locations as {slug, id} pairs (glassdoor.py, headless
 # Chromium -- jobspy's Glassdoor integration is bot-walled). The numeric

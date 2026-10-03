@@ -79,3 +79,23 @@ def is_ph_or_metro(location) -> bool:
     if is_metro_manila(location):
         return True
     return bool(_PH_COUNTRY_ONLY_PAT.match(location.strip()))
+
+
+_REMOTE_PAT = re.compile(
+    r"^\s*remote(\s*\(.*\))?\s*$"
+    r"|remote\s+(worldwide|global|anywhere|first)"
+    r"|worldwide|anywhere",
+    re.IGNORECASE,
+)
+
+
+def is_remote_location(location) -> bool:
+    """True for worldwide-remote markers ("Remote", "Remote Worldwide").
+
+    RemoteOK / Ashby remote-first boards use these; they carry no city, so
+    the NCR whitelist would otherwise drop them. Callers opt into this
+    when remote-friendly roles are in scope.
+    """
+    if not isinstance(location, str) or not location.strip():
+        return False
+    return bool(_REMOTE_PAT.search(location.strip()))

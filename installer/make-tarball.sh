@@ -70,6 +70,15 @@ for required in \
   requirements.txt Dockerfile docker-compose.yml .dockerignore .env.example \
   api/main.py db.py main.py notifier.py config.yaml schema.sql \
   run.sh stop.sh setup.sh setup_wizard.py launcher.py JobScraper.desktop \
+  scraper.py pipeline.py locations.py dedupe.py manual_fetch.py \
+  scrapers/__init__.py scrapers/playwright/__init__.py \
+  scrapers/playwright/common.py scrapers/playwright/jobstreet.py \
+  scrapers/playwright/glassdoor.py scrapers/playwright/jora.py \
+  scrapers/playwright/kalibrr.py scrapers/playwright/grabjobs.py \
+  scrapers/boards/__init__.py scrapers/boards/greenhouse.py \
+  scrapers/boards/lever.py scrapers/boards/ashby.py \
+  scrapers/feeds/__init__.py scrapers/feeds/trabajo.py \
+  scrapers/feeds/remoteok.py \
   README.md VERSION dashboard/dist/index.html
 do
   if ! grep -qxF "$required" <<<"$shipped"; then

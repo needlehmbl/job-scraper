@@ -38,7 +38,7 @@ ENV_PATH = ROOT / ".env"
 KEY_URL = "https://openrouter.ai/keys"
 KEY_TEST_URL = "https://openrouter.ai/api/v1/auth/key"
 
-BOARDS = ["indeed", "linkedin", "jobstreet", "glassdoor", "trabajo"]
+BOARDS = ["indeed", "linkedin", "jobstreet", "glassdoor", "trabajo", "remoteok", "jora", "kalibrr", "grabjobs"]
 
 BOARD_HINTS = {
     "indeed": "Indeed -- biggest listings",
@@ -46,6 +46,10 @@ BOARD_HINTS = {
     "jobstreet": "JobStreet -- Philippines-focused",
     "glassdoor": "Glassdoor -- company reviews + jobs",
     "trabajo": "Trabajo.org -- aggregator, extra leads",
+    "remoteok": "RemoteOK -- worldwide remote feed",
+    "jora": "Jora -- aggregator, browser-rendered",
+    "kalibrr": "Kalibrr -- Philippines-focused",
+    "grabjobs": "GrabJobs -- PH-heavy, browser-rendered",
 }
 
 PROVIDER_KEYS = ["OPENROUTER_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "GEMINI_API_KEY"]

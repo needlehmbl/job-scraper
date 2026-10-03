@@ -36,7 +36,15 @@ a = Analysis(
     # exe dies with "No module named 'api'". Listing api.main as a hidden
     # import anchors the graph: everything api.main imports (api.routes.*,
     # api.db, db, pipeline, tailor, resumes, render_resume) comes along.
-    hiddenimports=["api.main", "uvicorn", "fastapi", "playwright"] + tls_hidden,
+    hiddenimports=["api.main", "uvicorn", "fastapi", "playwright",
+                 "scrapers", "scrapers.playwright", "scrapers.boards",
+                 "scrapers.feeds", "scrapers.playwright.jobstreet",
+                 "scrapers.playwright.glassdoor", "scrapers.playwright.jora",
+                 "scrapers.playwright.kalibrr",
+                 "scrapers.playwright.grabjobs",
+                 "scrapers.playwright.common", "scrapers.boards.greenhouse",
+                 "scrapers.boards.lever", "scrapers.boards.ashby",
+                 "scrapers.feeds.trabajo", "scrapers.feeds.remoteok"] + tls_hidden,
     excludes=[],
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
