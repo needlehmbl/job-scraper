@@ -99,6 +99,28 @@ release. `tests/test_version_resolution.py` covers the precedence.
 `auto-release.yml` runs it in a `test` job that the `tag` job `needs`, so a red
 test means no release. Run it before merging `dev` -> `main`.
 
+## Local services (systemd)
+
+The stack runs as user systemd units on this machine:
+
+- `job-dashboard-api.service` -- uvicorn `api.main:app` on 127.0.0.1:8000
+- `job-dashboard-web.service` -- vite dev server on :5173 (HMR: frontend edits
+  apply live, no restart or rebuild needed for local testing)
+
+The API does **not** hot-reload. After changing any backend Python (`api/`,
+`db.py`, etc.) restart it, or new/changed endpoints answer **405** from the
+stale route table:
+
+```bash
+systemctl --user restart job-dashboard-api.service
+curl -s http://127.0.0.1:8000/health   # {"status":"ok"}
+```
+
+Sanity check for a new route: hit it with a nonexistent id. **404** means the
+route is live; **405** means the server predates your change -- restart again.
+The unit has `Restart=always` and holds port 8000, so free the port by stopping
+the service, never by editing the unit.
+
 ## The frozen (Windows) build
 
 `installer/JobScraper.spec` freezes `launcher.py`, which serves the app with
