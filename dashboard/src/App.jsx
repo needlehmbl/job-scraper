@@ -43,6 +43,18 @@ const SOURCES = ['indeed', 'linkedin', 'jobstreet', 'glassdoor', 'trabajo', 'goo
 // snappy; selection is id-based so it survives page turns.
 const PAGE_SIZE = 50
 
+// Debounced value: typing stays instant (input binds `search`), heavy
+// filter/sort memos bind `deferredSearch` so 1000+ rows don't re-filter
+// on every keystroke. 200ms feels instant but collapses fast typing.
+function useDebouncedValue(value, delay = 200) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(t)
+  }, [value, delay])
+  return debounced
+}
+
 // Hiring-funnel stages for APPLIED rows (separate axis from triage
 // status; a row carries a stage ⟺ its status is APPLIED).
 const STAGES = ['APPLIED', 'INITIAL', 'TECHNICAL', 'FINAL', 'OFFER', 'ACCEPTED', 'DECLINED', 'OUT']
@@ -298,15 +310,29 @@ function parseSearchQuery(raw) {
   return { scope, alternatives, terms }
 }
 
-function matchesSearch(job, parsed) {
+function matchesSearch(job, parsed, pre) {
   if (!parsed.alternatives.length) return true
-  const title = String(job.title || '').toLowerCase()
-  const company = String(job.company || '').toLowerCase()
+  const title = pre ? pre.t : String(job.title || '').toLowerCase()
+  const company = pre ? pre.c : String(job.company || '').toLowerCase()
   const haystacks =
     parsed.scope === 'title' ? [title] : parsed.scope === 'company' ? [company] : [title, company]
   return parsed.alternatives.some((alt) =>
     alt.every((term) => haystacks.some((h) => h.includes(term)))
   )
+}
+
+// Lowercase once per dataset change, not once per job per keystroke.
+// Maps id -> {t, c}. Jobs/filtered share numeric ids but live in
+// separate maps so lookups never collide.
+function buildSearchIndex(rows) {
+  const m = new Map()
+  for (const j of rows) {
+    m.set(j.id, {
+      t: String(j.title || '').toLowerCase(),
+      c: String(j.company || '').toLowerCase(),
+    })
+  }
+  return m
 }
 
 function useDarkMode() {
@@ -775,6 +801,7 @@ export default function App() {
   const [manualTitle, setManualTitle] = useState('')
   const [manualCompany, setManualCompany] = useState('')
   const [manualLocation, setManualLocation] = useState('')
+  const [manualNote, setManualNote] = useState('')
 
   // Undo: most-recent mutating action only, no cooldown. `lastAction` is a
   // descriptor { kind, label, ...payload }; `undoArmed` flips true on the
@@ -907,6 +934,7 @@ export default function App() {
     const url = (manualUrl || '').trim()
     if (!url || manualBusy) return
     setManualBusy(true)
+    setManualNote('')
     try {
       const payload = { url }
       const title = (manualTitle || '').trim()
@@ -924,12 +952,26 @@ export default function App() {
       if (!pr.ok) throw new Error(data.detail || `manual add failed (${pr.status})`)
       const job = data.job || {}
       const jobTitle = job.title || url
+      // Bot-wall / empty fetch: keep the modal open and ask for fields
+      // instead of silently saving "Untitled". Prefill what we got.
+      if (data.needs_input || data.blocked) {
+        const reason = data.block_reason || data.note || 'bot detection blocked auto-fetch'
+        const site = data.site ? ` (${data.site} via ${data.strategy || 'auto'})` : ''
+        setManualNote(`${reason}${site} — fill title/company, then Add again.`)
+        if (job.title && job.title !== 'Untitled (manual)' && !title) setManualTitle(job.title)
+        if (job.company && !company) setManualCompany(job.company)
+        if (job.location && !location) setManualLocation(job.location)
+        toast.error(`Auto-fetch blocked${site} — fill the fields manually`)
+        fetchAll()
+        return
+      }
       const note = data.note ? ` (${data.note})` : ''
       toast.success(data.moved ? `Already tracked — moved "${jobTitle}" to Applications` : `Added "${jobTitle}" to Applications${note}`)
       setManualUrl('')
       setManualTitle('')
       setManualCompany('')
       setManualLocation('')
+      setManualNote('')
       setManualOpen(false)
       fetchAll()
     } catch (e) {
@@ -1019,7 +1061,13 @@ export default function App() {
     setBulkBusy(false)
   }, [bulkStatus, selected, bulkBusy, fetchAll, jobs, recordAction])
 
-  const parsedSearch = useMemo(() => parseSearchQuery(search), [search])
+  const deferredSearch = useDebouncedValue(search, 200)
+  const parsedSearch = useMemo(() => parseSearchQuery(deferredSearch), [deferredSearch])
+
+  // Lowercased once per dataset change; matchesSearch then does only
+  // `includes` per row per *debounced* change instead of toLowerCase +
+  // filter on every keystroke.
+  const jobsIndex = useMemo(() => buildSearchIndex(jobs), [jobs])
 
   const filtered = useMemo(() => {
     return jobs.filter((job) => {
@@ -1033,10 +1081,10 @@ export default function App() {
       if (!source && hiddenSources.includes(job.source)) return false
       if (dateFrom && String(job.date_posted || '').slice(0, 10) < dateFrom) return false
       if (dateTo && String(job.date_posted || '').slice(0, 10) > dateTo) return false
-      if (!matchesSearch(job, parsedSearch)) return false
+      if (!matchesSearch(job, parsedSearch, jobsIndex.get(job.id))) return false
       return true
     })
-  }, [jobs, status, hidden, source, hiddenSources, dateFrom, dateTo, parsedSearch])
+  }, [jobs, jobsIndex, status, hidden, source, hiddenSources, dateFrom, dateTo, parsedSearch])
 
   const hiddenCounts = useMemo(() => {
     const counts = {}
@@ -1048,6 +1096,8 @@ export default function App() {
     () => filteredJobs.filter((j) => !j.restored),
     [filteredJobs]
   )
+
+  const pendingFilteredIndex = useMemo(() => buildSearchIndex(pendingFiltered), [pendingFiltered])
 
   // On-demand full-DB duplicate scan: exact groups (same normalized
   // title + company) plus fuzzy near-matches (same company, overlapping
@@ -1086,7 +1136,7 @@ export default function App() {
     const rows = pendingFiltered.filter((job) => {
       if (filterReason && job.filter_reason !== filterReason) return false
       if (filterSource && job.source !== filterSource) return false
-      return matchesSearch(job, parsedSearch)
+      return matchesSearch(job, parsedSearch, pendingFilteredIndex.get(job.id))
     })
     let sorted = [...rows]
     if (filtPostedDir) {
@@ -1112,7 +1162,7 @@ export default function App() {
       })
     }
     return sorted
-  }, [pendingFiltered, parsedSearch, filterReason, filterSource, filtPostedDir, filtFilteredDir])
+  }, [pendingFiltered, pendingFilteredIndex, parsedSearch, filterReason, filterSource, filtPostedDir, filtFilteredDir])
 
   // APPLIED rows "move out" of Jobs into the Applications tab, where the
   // funnel stage (not the triage status) is tracked.
@@ -1133,10 +1183,10 @@ export default function App() {
           if (appFilter === 'offers' && !OFFER_STAGES.includes(stage)) return false
           if (appFilter === 'rejected' && stage !== 'OUT') return false
           if (dueOnly && !isFollowupDue(job)) return false
-          return matchesSearch(job, parsedSearch)
+          return matchesSearch(job, parsedSearch, jobsIndex.get(job.id))
         })
         .sort((a, b) => new Date(b.status_updated_at || 0).getTime() - new Date(a.status_updated_at || 0).getTime()),
-    [jobs, appFilter, dueOnly, parsedSearch]
+    [jobs, jobsIndex, appFilter, dueOnly, parsedSearch]
   )
 
   const appCounts = useMemo(() => {
@@ -1183,11 +1233,13 @@ export default function App() {
   }, [jobsBase, postedDir, scrapedDir, scoreDir])
 
   // New tab or new filters → back to page 1 on every table.
+  // NOTE: binds deferredSearch (not raw search) so fast typing doesn't
+  // yank all three tables back to page 1 on every keystroke.
   useEffect(() => {
     setJobsPage(1)
     setAppsPage(1)
     setFiltPage(1)
-  }, [tab, status, hidden, source, hiddenSources, dateFrom, dateTo, search, filterReason, filterSource, appFilter, dueOnly])
+  }, [tab, status, hidden, source, hiddenSources, dateFrom, dateTo, deferredSearch, filterReason, filterSource, appFilter, dueOnly])
 
   // Clamped slices: page survives data refreshes, never points past the end.
   const jobsPages = Math.max(1, Math.ceil(sortedJobs.length / PAGE_SIZE))
@@ -3496,7 +3548,7 @@ function describeScrapeProgress(p) {
               {applicationRows.length} of {appCounts.total}
             </span>
             <button
-              onClick={() => setManualOpen(true)}
+              onClick={() => { setManualNote(''); setManualOpen(true) }}
               title="Track a posting you found yourself — paste its URL and it is fetched into Applications"
               className="rounded-full bg-neutral-900 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-neutral-700 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-neutral-300"
             >
@@ -3553,9 +3605,15 @@ function describeScrapeProgress(p) {
           >
             <h3 className="text-base font-semibold">Track an external application</h3>
             <p className="mt-1 text-sm text-neutral-500 dark:text-neutral-400">
-              Paste the posting URL — it is fetched, deduped, and moved to Applications.
-              Title/company are optional: fill them in when the site blocks auto-fetch (e.g. Indeed).
+              Paste the posting URL — known links move instantly, new links auto-fetch
+              (ATS API / Playwright per site). Only when bot detection blocks do you
+              need to fill title/company.
             </p>
+            {manualNote && (
+              <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/30 dark:text-amber-200">
+                {manualNote}
+              </p>
+            )}
             <input
               type="url"
               autoFocus

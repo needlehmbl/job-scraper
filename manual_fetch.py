@@ -1,19 +1,26 @@
 """
 Manual URL intake for postings found outside the scraper.
 
-normalize_url() keeps UNIQUE(url) stable: lowercase, strip tracking
-params (utm_*, fbclid, gclid, ...), drop fragments, strip trailing
-slash. Identity params (Indeed ?jk=, LinkedIn /view/<id>) are kept.
+Flow (matches the Add-manually UX):
+  1. normalize_url() keeps UNIQUE(url) stable: lowercase, strip tracking
+     params (utm_*, fbclid, gclid, ...), drop fragments, strip trailing
+     slash. Identity params (Indeed ?jk=, LinkedIn /view/<id>) are kept.
+     Trabajo outbound redirects are unwrapped to the canonical /job- link.
+  2. Callers compare the normalized link against stored URLs FIRST (no
+     network) — only unknown links reach the fetch below.
+  3. site_from_url() identifies the board; SITE_STRATEGY routes it:
+     - ATS boards (greenhouse/lever/ashby) -> board JSON API (same data
+       JobSpy bulk search uses, but single-posting direct — JobSpy has
+       no fetch-by-URL, so this is the equivalent fast path).
+     - everything else -> requests fast path, then per-site Playwright
+       helper on empty/shell/bot-wall.
+  4. Bot-wall detection (Cloudflare "Just a moment", cf-turnstile,
+     login gates) is verified on BOTH paths and returned as
+     blocked/block_reason — the UI then keeps the modal open and asks
+     the user to fill title/company instead of saving Untitled silently.
 
-fetch_job_from_url() is site-aware by hostname with a generic
-OpenGraph/<title> fallback so login-walled pages still save a minimal
-trackable row (fetch_limited=True) instead of blocking.
-
-Bot-walled boards (jobstreet/linkedin/indeed/glassdoor) answer plain
-GETs with a 403 Cloudflare "Just a moment..." shell, so when the fast
-requests path comes back empty for one of those hosts we retry in a
-headless Chromium (same launch flags as jobstreet.py) and read the
-rendered data-automation hooks / JSON-LD JobPosting.
+fetch_job_from_url() never raises: walled pages return fetch_limited
+rows with blocked=True so tracking is never blocked.
 """
 import json
 import re
@@ -68,8 +75,21 @@ def normalize_url(url: str) -> str:
                 if k.lower() not in _TRACKING_PARAMS]
     query = urlencode(kept)
     path = p.path or ""
-    # Trabajo outbound redirect wraps the canonical /job-... link;
-    # the canonical URL is the stable dedupe key.
+    # Trabajo outbound redirect wraps the canonical /job-... link
+    # (e.g. /go/<id>?url=<canonical> or ?url=/job-...); the canonical URL
+    # is the stable dedupe key, so unwrap it when present.
+    try:
+        q = dict(parse_qsl(p.query, keep_blank_values=True))
+        wrapped = q.get("url") or q.get("u") or q.get("redirect") or ""
+        if "trabajo" in host and wrapped:
+            if wrapped.startswith("/"):
+                path, query = wrapped.rstrip("/"), ""
+            elif "trabajo" in wrapped:
+                wp = urlparse(wrapped)
+                if wp.path:
+                    path, query = wp.path.rstrip("/") or "", ""
+    except Exception:
+        pass
     return urlunparse((scheme, host + port, path.rstrip("/") or "", "",
                        query, "")).rstrip("/")
 
@@ -81,26 +101,81 @@ def site_from_url(url: str) -> str:
         return ""
     host = host[4:] if host.startswith("www.") else host
     for needle in ("indeed", "linkedin", "jobstreet", "glassdoor",
-                   "trabajo", "greenhouse", "lever", "ashby", "remoteok"):
+                   "trabajo", "greenhouse", "lever", "ashby", "remoteok",
+                   "kalibrr", "jora", "grabjobs"):
         if needle in host:
             return needle
     return host or ""
 
 
+# Manual-add routing. JobSpy is bulk-search only (no fetch-by-URL), so
+# "use jobspy" for a pasted link means: ATS boards go straight at the
+# board JSON API (the same source JobSpy reads); aggregator/walled
+# boards go requests -> per-site Playwright helper below.
+SITE_STRATEGY = {
+    "greenhouse": "ats_api",
+    "lever": "ats_api",
+    "ashby": "ats_api",
+    "remoteok": "api",
+    "trabajo": "requests",
+    "indeed": "playwright",
+    "linkedin": "playwright",
+    "glassdoor": "playwright",
+    "jobstreet": "playwright",
+    "kalibrr": "playwright",
+    "jora": "playwright",
+    "grabjobs": "playwright",
+}
+
+
+def strategy_for_site(site: str) -> str:
+    """Fetch strategy for a site key: ats_api | api | requests | playwright."""
+    return SITE_STRATEGY.get(site or "", "requests")
+
+
+# Substrings that mark a bot-wall / login-gate shell on either path.
+_BOT_WALL_MARKERS = (
+    "just a moment", "cf-turnstile", "cf-challenge", "attention required",
+    "access denied", "verify you are human", "are you a robot",
+    "sign in to view", "log in to view", "join now to view",
+)
+
+
+def is_bot_wall_text(text: str, title: str = "") -> bool:
+    """True when HTML/title looks like a challenge/login shell, not a posting."""
+    blob = f"{title or ''}\n{text or ''}"[:20000].lower()
+    return any(m in blob for m in _BOT_WALL_MARKERS)
+
+
+def _blocked_note(site: str, reason: str) -> str:
+    return (f"{site or 'site'} blocked auto-fetch ({reason}) — "
+            f"fill title/company manually")
+
+
 # Hosts that answer plain GETs with a bot-wall (403 Cloudflare shell,
 # login gate) instead of the posting. These go through headless Chromium
-# when the fast path comes back empty.
-_BROWSER_HOSTS = frozenset({"jobstreet", "linkedin", "indeed", "glassdoor"})
+# when the fast path comes back empty, shelled, or bot-walled.
+_BROWSER_HOSTS = frozenset({"jobstreet", "linkedin", "indeed", "glassdoor",
+                            "kalibrr", "jora", "grabjobs"})
 
 # Rendered-page hooks per site, first hit wins. Mapped live against
 # ph.jobstreet.com/job/<id> (title: h1/job-detail-title, company:
 # advertiser-name, location: job-detail-location, body: jobAdDetails) and
 # linkedin.com/jobs/view/<id> (title: h1.top-card-layout__title,
 # company: a.topcard__org-name-link, location: h4.top-card-layout__second-subline).
+# Indeed/Glassdoor/Trabajo/Kalibrr/Jora/GrabJobs rows below are the
+# best-known public hooks; JSON-LD JobPosting remains the fallback.
 _TITLE_SELECTORS = {
     "jobstreet": ["[data-automation='job-detail-title']", "h1"],
     "linkedin": ["h1.top-card-layout__title",
                  "[data-automation='job-detail-title']", "h1"],
+    "indeed": ["h1.jobsearch-JobInfoHeader-title",
+               "[data-testid='jobsearch-JobInfoHeader-title']", "h1"],
+    "glassdoor": ["[data-test='job-title']", "h1"],
+    "trabajo": ["h1", "[data-automation='job-detail-title']"],
+    "kalibrr": ["h1", "[data-testid='job-title']"],
+    "jora": ["h1", "[data-testid='job-title']"],
+    "grabjobs": ["h1", "[data-testid='job-title']"],
     "default": ["h1"],
 }
 _COMPANY_SELECTORS = {
@@ -108,6 +183,12 @@ _COMPANY_SELECTORS = {
     "linkedin": ["a.topcard__org-name-link",
                  ".jobs-unified-top-card__company-name"],
     "trabajo": ["span.job-chip"],
+    "indeed": ["[data-company-name]", ".jobsearch-InlineCompanyRating a",
+               ".jobsearch-CompanyInfoWithoutHeaderImage a"],
+    "glassdoor": ["[data-test='employer-name']", ".employer-name"],
+    "kalibrr": ["[data-testid='company-name']", ".company-name"],
+    "jora": ["[data-testid='company-name']", ".company-name"],
+    "grabjobs": ["[data-testid='company-name']", ".company-name"],
     "default": ["[data-automation='jobCompany']", ".company-name",
                 ".job-company"],
 }
@@ -115,10 +196,15 @@ _LOCATION_SELECTORS = {
     "jobstreet": ["[data-automation='job-detail-location']"],
     "linkedin": ["h4.top-card-layout__second-subline",
                  "[data-automation='jobLocation']"],
+    "indeed": ["[data-testid='jobsearch-JobInfoHeader-companyLocation']",
+               "[data-testid='inlineHeader-companyLocation']"],
+    "glassdoor": ["[data-test='location']", ".location"],
     "default": ["[data-automation='jobLocation']", ".job-location"],
 }
 _DESC_SELECTORS = {
     "jobstreet": ["[data-automation='jobAdDetails']"],
+    "indeed": ["#jobDescriptionText", "[data-testid='job-description']"],
+    "glassdoor": ["[data-test='job-description']", "#JobDescription"],
     "default": ["article", "main"],
 }
 
@@ -327,11 +413,39 @@ def _jsonld_salary(item: dict) -> str:
         return ""
 
 
+def _storage_state_for(site: str):
+    """Persisted login/clearance cookies for headless renders, if present.
+
+    Reuses the bulk scraper's storage_state/<site>.json when it exists,
+    falling back to storage_state/jobstreet.json (Cloudflare clearance).
+    Returns None for a fresh anonymous context.
+    """
+    import os
+    from pathlib import Path
+    cands = []
+    try:
+        here = Path(__file__).resolve().parent
+        cands = [here / "storage_state" / f"{site}.json",
+                 here / "storage_state" / "jobstreet.json",
+                 Path.cwd() / "storage_state" / f"{site}.json"]
+    except Exception:
+        return None
+    for p in cands:
+        try:
+            if p.is_file() and p.stat().st_size > 10 and os.access(p, os.R_OK):
+                return str(p)
+        except Exception:
+            continue
+    return None
+
+
 def fetch_with_browser(url: str, site: str, timeout_ms: int = 60000) -> dict:
     """Render one posting URL in headless Chromium and extract fields.
 
     Never raises: returns {} when the browser, the challenge, or the
     selectors defeat us (caller keeps the minimal trackable row).
+    On bot-wall defeat returns {"blocked": True, "block_reason": ...}
+    so the caller can ask the user for fields instead of saving Untitled.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -344,14 +458,35 @@ def fetch_with_browser(url: str, site: str, timeout_ms: int = 60000) -> dict:
                 args=["--disable-blink-features=AutomationControlled",
                       "--no-sandbox"],
             )
-            page = browser.new_page(
-                user_agent=HEADERS["User-Agent"], locale="en-PH")
+            storage_state = _storage_state_for(site)
+            try:
+                if storage_state:
+                    ctx = browser.new_context(
+                        user_agent=HEADERS["User-Agent"], locale="en-PH",
+                        storage_state=storage_state)
+                else:
+                    ctx = browser.new_context(
+                        user_agent=HEADERS["User-Agent"], locale="en-PH")
+                page = ctx.new_page()
+            except Exception:
+                page = browser.new_page(
+                    user_agent=HEADERS["User-Agent"], locale="en-PH")
             try:
                 page.goto(url, timeout=timeout_ms,
                           wait_until="domcontentloaded")
                 try:
-                    if "Just a moment" in (page.content() or ""):
+                    html = page.content() or ""
+                    if is_bot_wall_text(html):
                         page.wait_for_timeout(8000)
+                        # GrabJobs-style walls sometimes need a reload.
+                        if site in ("grabjobs", "jora", "indeed", "glassdoor"):
+                            try:
+                                if is_bot_wall_text(page.content() or ""):
+                                    page.reload(timeout=30000,
+                                                wait_until="domcontentloaded")
+                                    page.wait_for_timeout(5000)
+                            except Exception:
+                                pass
                 except Exception:
                     pass
                 try:
@@ -404,12 +539,27 @@ def fetch_with_browser(url: str, site: str, timeout_ms: int = 60000) -> dict:
                     or extra.get("salary_raw", "")
                 )
                 if not title:
+                    try:
+                        walled = is_bot_wall_text(page.content() or "", og_title)
+                    except Exception:
+                        walled = False
+                    if walled:
+                        return {"blocked": True,
+                                "block_reason": "bot-wall challenge in browser",
+                                "site": site}
                     return {}
+                # A 200-OK challenge shell can carry a junk title
+                # ("Just a moment...") — never save it as the posting.
+                if is_bot_wall_text(f"{title} {desc or ''}", title):
+                    return {"blocked": True,
+                            "block_reason": "bot-wall challenge in browser",
+                            "site": site}
                 return {"title": title[:500], "company": company[:300],
                         "location": (location[:300] if location else None),
                         "description": desc or None,
                         "salary_raw": salary_raw or "",
-                        "site": site, "fetch_limited": False}
+                        "site": site, "fetch_limited": False,
+                        "blocked": False}
             finally:
                 try:
                     browser.close()
@@ -497,23 +647,121 @@ def _parse_html(soup, site: str) -> tuple[str, str, str, str, bool]:
     return title, company, location or None, desc, shell
 
 
+def _fetch_ats_api(url: str, site: str) -> dict:
+    """Direct board-API fetch for greenhouse/lever/ashby (JobSpy equivalent).
+
+    JobSpy has no fetch-by-URL; these are the same JSON endpoints its
+    bulk search reads, hit for one posting. Returns {} when the URL does
+    not match a known board pattern or the API misses.
+    """
+    try:
+        from urllib.parse import urlparse as _up
+        host = (_up(url).hostname or "").lower()
+        parts = [p for p in (_up(url).path or "").split("/") if p]
+    except Exception:
+        return {}
+    try:
+        if site == "greenhouse":
+            # boards.greenhouse.io/<board>/jobs/<id> or job-boards.../jobs/<id>
+            bid = None
+            if "boards.greenhouse.io" in host and len(parts) >= 3:
+                bid, jid = parts[-3], parts[-1].split("?")[0]
+            elif parts:
+                # greenhouse Harvest API needs board token; try path guess.
+                return {}
+            else:
+                return {}
+            if not bid or not jid:
+                return {}
+            r = requests.get(
+                f"https://boards-api.greenhouse.io/v1/boards/{bid}/jobs/{jid}",
+                headers=HEADERS, timeout=15)
+            if r.status_code != 200:
+                return {}
+            d = r.json()
+            loc = (d.get("location") or {}).get("name", "") if isinstance(
+                d.get("location"), dict) else (d.get("location") or "")
+            return {"title": (d.get("title") or "")[:500],
+                    "company": "",  # board token -> employer unknown w/o board meta
+                    "location": (loc or "")[:300] or None,
+                    "description": (d.get("content") or "")[:8000] or None,
+                    "salary_raw": "", "site": site, "fetch_limited": False,
+                    "blocked": False}
+        if site == "lever":
+            # api.lever.co/v0/postings/<board>/<id>
+            if "lever.co" not in host or len(parts) < 2:
+                return {}
+            board, jid = parts[-2], parts[-1].split("?")[0]
+            r = requests.get(
+                f"https://api.lever.co/v0/postings/{board}/{jid}",
+                headers=HEADERS, timeout=15)
+            if r.status_code != 200:
+                return {}
+            d = r.json()
+            cats = d.get("categories") or {}
+            return {"title": (d.get("text") or "")[:500],
+                    "company": "", "location": (cats.get("location") or "")[:300] or None,
+                    "description": (d.get("description") or "")[:8000] or None,
+                    "salary_raw": (cats.get("salary") or "")[:300],
+                    "site": site, "fetch_limited": False, "blocked": False}
+        if site == "ashby":
+            # api.ashbyhq.com/posting-api/job-board/<board>/<id>
+            if "ashby" not in host or len(parts) < 2:
+                return {}
+            board, jid = parts[-2], parts[-1].split("?")[0]
+            r = requests.get(
+                f"https://api.ashbyhq.com/posting-api/job-board/{board}/{jid}",
+                headers=HEADERS, timeout=15)
+            if r.status_code != 200:
+                return {}
+            d = r.json()
+            loc = (d.get("location") or {}).get("name", "") if isinstance(
+                d.get("location"), dict) else ""
+            return {"title": (d.get("title") or "")[:500],
+                    "company": (d.get("organizationName") or "")[:300],
+                    "location": (loc or "")[:300] or None,
+                    "description": (d.get("descriptionHtml") or d.get("description") or "")[:8000] or None,
+                    "salary_raw": "", "site": site, "fetch_limited": False,
+                    "blocked": False}
+    except Exception:
+        return {}
+    return {}
+
+
 def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
     """Fetch title/company/location/description for one posting URL.
 
-    Never raises: on any failure returns a minimal row with
-    fetch_limited=True so tracking is never blocked.
+    Strategy: ATS API (greenhouse/lever/ashby) -> requests fast path ->
+    per-site Playwright helper. Never raises: on any failure returns a
+    minimal row with fetch_limited=True + blocked/block_reason so the
+    caller can prompt for manual fields instead of saving Untitled.
     """
     site = site_from_url(url)
+    strategy = strategy_for_site(site)
     walled_note = (f"{site} blocks anonymous fetching "
                    f"(bot-wall) — saved with URL only"
                    if site in _BROWSER_HOSTS else "")
     blank = {"title": "", "company": "", "location": None,
              "description": None, "site": site, "fetch_limited": True,
-             "fetch_note": walled_note, "salary_raw": ""}
+             "fetch_note": walled_note, "salary_raw": "",
+             "blocked": site in _BROWSER_HOSTS, "block_reason": "fast-path empty",
+             "strategy": strategy}
+    # 1. ATS fast lane (JobSpy-equivalent direct API, no browser needed).
+    if strategy in ("ats_api", "api"):
+        if strategy == "ats_api":
+            hit = _fetch_ats_api(url, site)
+            if hit.get("title"):
+                hit["strategy"] = strategy
+                return hit
+        # remoteok JSON feed is list-level; fall through to generic path.
     soup = None
+    status = None
+    raw_text = ""
     try:
         r = requests.get(url, headers=HEADERS, timeout=timeout)
+        status = r.status_code
         if r.status_code == 200 and r.text:
+            raw_text = r.text
             soup = BeautifulSoup(r.text, "html.parser")
     except Exception:
         soup = None
@@ -522,10 +770,28 @@ def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
         # headless Chromium for ANY site instead of saving Untitled.
         rendered = fetch_with_browser(url, site)
         if rendered.get("title"):
+            rendered["strategy"] = strategy
             return rendered
+        if rendered.get("blocked"):
+            blank.update({k: rendered.get(k) for k in ("blocked", "block_reason") if rendered.get(k)})
+            blank["fetch_note"] = _blocked_note(site, rendered.get("block_reason") or "request failed")
+        blank["strategy"] = strategy
         return blank
 
     title, company, location, desc, shell = _parse_html(soup, site)
+    # 200-OK bot-wall shells carry junk titles ("Just a moment...") with
+    # non-empty text — verify BEFORE trusting the fast path.
+    if is_bot_wall_text(f"{title} {raw_text[:8000]}", title):
+        rendered = fetch_with_browser(url, site)
+        if rendered.get("title"):
+            rendered["strategy"] = strategy
+            return rendered
+        reason = rendered.get("block_reason") or "bot-wall challenge (200-OK shell)"
+        out = dict(blank)
+        out.update({"fetch_note": _blocked_note(site, reason),
+                    "blocked": True, "block_reason": reason,
+                    "strategy": strategy})
+        return out
     if not title or shell:
         # Empty fast path, or LinkedIn answered with its anonymous shell
         # ("<Company> hiring <Title> in ..."): render once in headless
@@ -534,14 +800,25 @@ def fetch_job_from_url(url: str, timeout: int = 15) -> dict:
         if rendered.get("title"):
             if shell and not rendered.get("company") and company:
                 rendered["company"] = company
+            rendered["strategy"] = strategy
             return rendered
+        if rendered.get("blocked"):
+            out = dict(blank)
+            out.update({"fetch_note": _blocked_note(
+                site, rendered.get("block_reason") or "bot-wall"),
+                "blocked": True,
+                "block_reason": rendered.get("block_reason") or "bot-wall",
+                "strategy": strategy})
+            return out
     return {"title": title[:500] if title else "",
             "company": company[:300],
             "location": (location[:300] if location else None),
             "description": desc,
             "salary_raw": extract_salary_raw(soup, site, desc or ""),
             "site": site,
-            "fetch_limited": not bool(title)}
+            "fetch_limited": not bool(title),
+            "blocked": False, "block_reason": "",
+            "strategy": strategy}
 PLACEHOLDER_TITLES = frozenset({"untitled (manual)", "untitled", ""})
 
 

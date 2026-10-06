@@ -279,6 +279,11 @@ CREATE TABLE IF NOT EXISTS job_status_history (
 );
 CREATE INDEX IF NOT EXISTS job_status_history_job_id_idx ON job_status_history(job_id);
 CREATE INDEX IF NOT EXISTS job_status_history_changed_at_idx ON job_status_history(changed_at);
+-- Dashboard list/sort/filter hot paths (mirrors schema.sql).
+CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs (status);
+CREATE INDEX IF NOT EXISTS jobs_source_idx ON jobs (source);
+CREATE INDEX IF NOT EXISTS jobs_status_updated_at_idx ON jobs (status_updated_at DESC);
+CREATE INDEX IF NOT EXISTS jobs_scraped_at_idx ON jobs (scraped_at DESC);
 """
 
 
@@ -372,6 +377,8 @@ CREATE TABLE IF NOT EXISTS filtered_jobs (
 CREATE UNIQUE INDEX IF NOT EXISTS filtered_jobs_url_idx
   ON filtered_jobs (url) WHERE url <> '';
 CREATE INDEX IF NOT EXISTS filtered_jobs_restored_idx ON filtered_jobs (restored);
+CREATE INDEX IF NOT EXISTS filtered_jobs_reason_idx ON filtered_jobs (filter_reason);
+CREATE INDEX IF NOT EXISTS filtered_jobs_source_idx ON filtered_jobs (source);
 ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_raw TEXT NOT NULL DEFAULT '';
 ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_currency TEXT NOT NULL DEFAULT '';
 ALTER TABLE filtered_jobs ADD COLUMN IF NOT EXISTS salary_min DOUBLE PRECISION DEFAULT NULL;

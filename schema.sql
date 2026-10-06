@@ -92,3 +92,12 @@ CREATE TABLE IF NOT EXISTS filtered_jobs (
 CREATE UNIQUE INDEX IF NOT EXISTS filtered_jobs_url_idx
   ON filtered_jobs (url) WHERE url <> '';
 CREATE INDEX IF NOT EXISTS filtered_jobs_restored_idx ON filtered_jobs (restored);
+-- Dashboard list/sort/filter hot paths (Jobs/Filtered/Applications tabs).
+-- Client still filters in-memory, but these keep API list/sort and any
+-- future server-side search from seq-scanning 1000+ rows.
+CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs (status);
+CREATE INDEX IF NOT EXISTS jobs_source_idx ON jobs (source);
+CREATE INDEX IF NOT EXISTS jobs_status_updated_at_idx ON jobs (status_updated_at DESC);
+CREATE INDEX IF NOT EXISTS jobs_scraped_at_idx ON jobs (scraped_at DESC);
+CREATE INDEX IF NOT EXISTS filtered_jobs_reason_idx ON filtered_jobs (filter_reason);
+CREATE INDEX IF NOT EXISTS filtered_jobs_source_idx ON filtered_jobs (source);

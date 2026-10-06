@@ -76,6 +76,16 @@ def _move_to_applied(cur, job_id: int, old_status, old_stage):
 def manual_add(body: ManualAddRequest):
     """Track an externally-found posting URL as APPLIED.
 
+    Ordered flow:
+      1. normalize + compare link against stored URLs FIRST (no network).
+         Known links move to APPLIED immediately (override backfills).
+      2. site_from_url() identifies the board; strategy routes it
+         (ATS API vs requests vs Playwright helper — see manual_fetch).
+      3. fetch verifies bot-wall interruption (blocked/block_reason).
+      4. only blocked/placeholder rows ask the caller for manual fields
+         (needs_input=True — the modal stays open instead of silently
+         saving Untitled).
+
     Dedupes by normalized URL then title+company fingerprint
     (dedupe.py): existing rows are moved to APPLIED, new rows are
     inserted directly as APPLIED with stage APPLIED.
@@ -96,6 +106,42 @@ def manual_add(body: ManualAddRequest):
         raise HTTPException(status_code=400, detail="invalid URL")
     override = {"title": body.title, "company": body.company,
                 "location": body.location}
+    site_early = mf.site_from_url(url)
+    strategy_early = mf.strategy_for_site(site_early)
+
+    # 1. Compare link FIRST — no network when the URL is already tracked.
+    # Cheap SELECT outside any long fetch; overrides backfill placeholders.
+    with db.connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, status, stage FROM jobs WHERE url = %s", (url,))
+        early = cur.fetchone()
+        if early:
+            jid, old_status, old_stage = early[0], early[1], early[2]
+            result = _move_to_applied(cur, jid, old_status, old_stage)
+            # Backfill only from user-typed fields (no fetch happened).
+            try:
+                typed = {"title": (body.title or "").strip(),
+                         "company": (body.company or "").strip(),
+                         "location": (body.location or "").strip()}
+                if typed["title"] and not mf.is_placeholder_title(typed["title"]):
+                    cur.execute("SELECT title FROM jobs WHERE id = %s", (jid,))
+                    _row = cur.fetchone()
+                    if _row and mf.is_placeholder_title(_row[0]):
+                        cur.execute("UPDATE jobs SET title = %s WHERE id = %s",
+                                    (typed["title"][:500], jid))
+                if typed["company"]:
+                    cur.execute("UPDATE jobs SET company = %s WHERE id = %s AND (company IS NULL OR company = '')",
+                                (typed["company"][:300], jid))
+                if typed["location"]:
+                    cur.execute("UPDATE jobs SET location = %s WHERE id = %s AND (location IS NULL OR location = '')",
+                                (typed["location"][:300], jid))
+            except Exception:
+                pass
+            cur.execute("SELECT * FROM jobs WHERE id = %s", (jid,))
+            row = cur.fetchone()
+            result = dict(zip([d.name for d in cur.description], row))
+            conn.commit()
+            return {"moved": True, "job": result, "site": result.get("source") or site_early,
+                    "strategy": strategy_early, "blocked": False, "needs_input": False}
 
     # Network fetch OUTSIDE any DB transaction: holding a transaction
     # open across a 15s+ browser render once wedged the whole DB behind
@@ -177,7 +223,9 @@ def manual_add(body: ManualAddRequest):
             row = cur.fetchone()
             result = dict(zip([d.name for d in cur.description], row))
             conn.commit()
-            return {"moved": True, "job": result}
+            return {"moved": True, "job": result, "site": site,
+                    "strategy": fetched.get("strategy") or strategy_early,
+                    "blocked": False, "needs_input": False}
 
         # Fingerprint fallback: same listing, different URL. Placeholder
         # titles ("Untitled (manual)") are skipped: two unfetched rows that
@@ -196,7 +244,9 @@ def manual_add(body: ManualAddRequest):
                         frow = cur.fetchone()
                         result = dict(zip([d.name for d in cur.description], frow))
                         conn.commit()
-                        return {"moved": True, "job": result}
+                        return {"moved": True, "job": result, "site": site,
+                                "strategy": fetched.get("strategy") or strategy_early,
+                                "blocked": False, "needs_input": False}
         except Exception:
             pass
 
@@ -250,11 +300,20 @@ def manual_add(body: ManualAddRequest):
             (result["id"],),
         )
         conn.commit()
+        blocked = bool(fetched.get("blocked")) or mf.is_placeholder_title(fields["title"])
+        # needs_input = only now do we ask the user: auto-fetch was
+        # defeated (bot-wall or empty) and no typed override saved us.
+        typed_given = bool((body.title or "").strip() and (body.company or "").strip())
+        needs_input = bool(blocked and not typed_given)
         note = ""
         if mf.is_placeholder_title(fields["title"]):
             note = fetched.get("fetch_note") or (
                 "details could not be fetched — saved with URL only")
-        return {"moved": False, "job": result, "note": note}
+        return {"moved": False, "job": result, "note": note,
+                "site": site, "strategy": fetched.get("strategy") or strategy_early,
+                "blocked": bool(fetched.get("blocked")),
+                "block_reason": fetched.get("block_reason") or "",
+                "needs_input": needs_input}
 
 
 @router.get("", response_model=list[Job])
