@@ -53,6 +53,14 @@ last_feedback_report: dict = {}
 # silently-changed site layout surfaces instead of looking like "no jobs".
 last_source_report: dict = {}
 
+# Per-term audit for the last scrape(), filled at the end of every run:
+# {term: {"raw": int, "kept": int}} where raw = rows merged under that
+# matched_search_term (post within-run dedupe, pre-filter) and kept = rows
+# surviving keyword+experience+feedback filters. Use one run of this table
+# to cut dead/overlap terms -- cost scales linearly with terms on every
+# source (jobspy + jobstreet + glassdoor + trabajo).
+last_term_report: dict = {}
+
 # Live scrape progress for the dashboard's "Scrape new jobs" button.
 # Updated from worker threads during scrape(); read via get_progress().
 # Shape: {"phase", "source", "term", "detail", "done", "total"}.
@@ -636,8 +644,9 @@ def _run_boards_block(cfg: dict, s: dict, seen_urls: set | None = None):
 def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     s = cfg["search"]
     all_frames = []
-    global last_source_report, last_exp_dropped
+    global last_source_report, last_exp_dropped, last_term_report
     last_exp_dropped = []
+    last_term_report = {}
     exp_drops: list = []
     stats: dict = {}  # source -> {"terms", "rows", "errors"}
 
@@ -763,6 +772,18 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     except Exception as e:
         print(f"[scraper] WARNING: fingerprint dedup failed ({e}); keeping URL-deduped rows.")
 
+    def _term_counts(df) -> dict:
+        try:
+            if df is None or getattr(df, "empty", True):
+                return {}
+            col = df.get("matched_search_term") if hasattr(df, "get") else None
+            if col is None:
+                return {}
+            return {str(k): int(v) for k, v in col.fillna("").astype(str).value_counts().items()}
+        except Exception:
+            return {}
+
+    raw_counts = _term_counts(combined)
     combined = apply_keyword_filters(combined, s, dropped_out=exp_drops)
     last_exp_dropped = exp_drops
     if exp_drops:
@@ -775,6 +796,17 @@ def scrape(cfg: dict, seen_urls: set | None = None) -> pd.DataFrame:
     combined = apply_feedback_filter(combined, cfg, seen_urls)
     bump_progress(1, phase="applying learned feedback filters",
                   detail=f"{len(combined)} rows kept")
+    kept_counts = _term_counts(combined)
+    last_term_report = {
+        term: {"raw": int(raw_counts.get(term, 0)),
+               "kept": int(kept_counts.get(term, 0))}
+        for term in sorted(set(raw_counts) | set(kept_counts))
+    }
+    if last_term_report:
+        print("[scraper] term audit (raw merged -> kept after filters):")
+        for term, st in sorted(last_term_report.items(),
+                               key=lambda kv: (-kv[1]["kept"], -kv[1]["raw"])):
+            print(f"[scraper]   '{term}': {st['raw']} -> {st['kept']} kept")
     set_progress("scraping done — handing off to save phase",
                  detail=f"{len(combined)} rows")
     return combined.reset_index(drop=True)

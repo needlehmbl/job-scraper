@@ -131,6 +131,7 @@ def run_scrape() -> dict:
     jobs = scrape(cfg, seen_urls=seen_urls)
     print(f"[pipeline] {len(jobs)} jobs after scraping + filters")
     src_report = dict(getattr(scraper_mod, "last_source_report", {}) or {})
+    term_report = dict(getattr(scraper_mod, "last_term_report", {}) or {})
     warnings = [
         f"{source}: 0 rows across {st['terms']} searches "
         f"(layout may have changed{'; ' + st['errors'][0] if st.get('errors') else ''})"
@@ -186,7 +187,7 @@ def run_scrape() -> dict:
                 "filtered": filtered, "filter_reasons": top_reasons,
                 "filtered_saved": filtered_saved,
                 "source_stats": src_report, "warnings": warnings,
-                "errors": errors}
+                "errors": errors, "term_stats": term_report}
 
     try:
         import score as score_mod
@@ -272,4 +273,4 @@ def run_scrape() -> dict:
             "filtered": filtered, "filter_reasons": top_reasons,
             "filtered_saved": filtered_saved,
             "source_stats": src_report, "warnings": warnings,
-            "errors": errors}
+            "errors": errors, "term_stats": term_report}

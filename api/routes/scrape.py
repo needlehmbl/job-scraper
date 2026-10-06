@@ -42,6 +42,7 @@ _state: dict = {
     "source_stats": None,
     "warnings": None,
     "errors": None,
+    "term_stats": None,
     "progress": None,
 }
 
@@ -70,6 +71,7 @@ def _worker():
                 "source_stats": result.get("source_stats"),
                 "warnings": result.get("warnings"),
                 "errors": result.get("errors"),
+                "term_stats": result.get("term_stats"),
                 "progress": final_progress,
             })
     except Exception as e:  # never leave the button stuck on "running"
@@ -107,6 +109,7 @@ def start_scrape():
             "source_stats": None,
             "warnings": None,
             "errors": None,
+            "term_stats": None,
             "progress": None,
         })
     t = threading.Thread(target=_worker, daemon=True)
