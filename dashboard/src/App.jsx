@@ -128,6 +128,15 @@ function fmtDateTime(v) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// Scraped-time sort key: numeric epoch ms, or null when missing/invalid
+// so rows without a time sort last (never NaN -- NaN poisons Array.sort
+// and leaves rows in API order, which looks "mixed up" in asc/desc).
+function scrapedTime(j) {
+  if (!j || !j.scraped_at) return null
+  const t = new Date(j.scraped_at).getTime()
+  return Number.isNaN(t) ? null : t
+}
+
 function timeAgo(iso) {
   if (!iso) return 'never'
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
@@ -1218,18 +1227,26 @@ export default function App() {
     }
     if (scrapedDir) {
       const dir = scrapedDir === 'asc' ? 1 : -1
-      return [...jobsBase].sort(
-        (a, b) =>
-          dir *
-          (new Date(a.scraped_at || 0).getTime() - new Date(b.scraped_at || 0).getTime())
-      )
+      return [...jobsBase].sort((a, b) => {
+        const ta = scrapedTime(a), tb = scrapedTime(b)
+        if (ta === null && tb === null) return (a.id ?? 0) - (b.id ?? 0)
+        if (ta === null) return 1
+        if (tb === null) return -1
+        return dir * (ta - tb) || ((a.id ?? 0) - (b.id ?? 0))
+      })
     }
     if (!scoreDir) return jobsBase
     const dir = scoreDir === 'asc' ? 1 : -1
-    return [...jobsBase].sort(
-      (a, b) => dir * ((a.score ?? 0) - (b.score ?? 0)) ||
-        (new Date(b.scraped_at || 0).getTime() - new Date(a.scraped_at || 0).getTime())
-    )
+    return [...jobsBase].sort((a, b) => {
+      const byScore = dir * ((a.score ?? 0) - (b.score ?? 0))
+      if (byScore) return byScore
+      const ta = scrapedTime(a), tb = scrapedTime(b)
+      if (ta === null && tb === null) return (a.id ?? 0) - (b.id ?? 0)
+      if (ta === null) return 1
+      if (tb === null) return -1
+      // Newest scraped first as the score tie-breaker, like the API.
+      return (tb - ta) || ((a.id ?? 0) - (b.id ?? 0))
+    })
   }, [jobsBase, postedDir, scrapedDir, scoreDir])
 
   // New tab or new filters → back to page 1 on every table.
@@ -3090,7 +3107,7 @@ function describeScrapeProgress(p) {
                   <th className="px-4 py-3 font-medium">
                     <button
                       onClick={cycleScrapedSort}
-                      title="Sort by time scraped (API order → newest → oldest)"
+                      title="Sort by time scraped (rows without a time stay last)"
                       className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
                     >
                       Scraped {scrapedDir === 'desc' ? '▼' : scrapedDir === 'asc' ? '▲' : '↕'}

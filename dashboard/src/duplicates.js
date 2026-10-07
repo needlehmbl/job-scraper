@@ -147,13 +147,22 @@ export function findFuzzyGroups(jobs) {
 // NEW > anything else), then earliest scraped, then lowest id.
 const KEEPER_RANK = { APPLIED: 0, REVIEWED: 1, NEW: 2 }
 
+function scrapedTimeMs(v) {
+  if (!v) return null
+  const t = new Date(v).getTime()
+  return Number.isNaN(t) ? null : t
+}
+
 export function defaultKeeper(group) {
   const rows = [...group.rows].sort((a, b) => {
     const ra = KEEPER_RANK[a.status] ?? 3
     const rb = KEEPER_RANK[b.status] ?? 3
     if (ra !== rb) return ra - rb
-    const ta = new Date(a.scraped_at || 0).getTime()
-    const tb = new Date(b.scraped_at || 0).getTime()
+    const ta = scrapedTimeMs(a.scraped_at)
+    const tb = scrapedTimeMs(b.scraped_at)
+    if (ta === null && tb === null) return a.id - b.id
+    if (ta === null) return 1
+    if (tb === null) return -1
     if (ta !== tb) return ta - tb
     return a.id - b.id
   })
