@@ -128,17 +128,14 @@ function fmtDateTime(v) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-// Scraped-column sort key: last_seen (freshness) with scraped_at fallback.
-// Numeric epoch ms, or null when both missing/invalid so rows without a
-// time sort last (never NaN -- NaN poisons Array.sort and leaves rows in
-// API order, which looks "mixed up" in asc/desc). Note the column shows
-// scraped_at on top and last_seen in the "seen" subline, so the sort
-// follows the subline, not the top line.
+// Scraped-column sort key: first-scraped time only (scraped_at).
+// Numeric epoch ms, or null when missing/invalid so rows without a time
+// sort last (never NaN -- NaN poisons Array.sort and leaves rows in API
+// order, which looks "mixed up" in asc/desc). Re-scrapes (last_seen)
+// are intentionally ignored here: the cell reports first discovery only.
 function scrapedSortTime(j) {
-  if (!j) return null
-  const raw = j.last_seen || j.scraped_at
-  if (!raw) return null
-  const t = new Date(raw).getTime()
+  if (!j || !j.scraped_at) return null
+  const t = new Date(j.scraped_at).getTime()
   return Number.isNaN(t) ? null : t
 }
 
@@ -3112,7 +3109,7 @@ function describeScrapeProgress(p) {
                   <th className="px-4 py-3 font-medium">
                     <button
                       onClick={cycleScrapedSort}
-                      title="Sort by last seen (freshness; rows without a time stay last)"
+                      title="Sort by time first scraped (rows without a time stay last)"
                       className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
                     >
                       Scraped {scrapedDir === 'desc' ? '▼' : scrapedDir === 'asc' ? '▲' : '↕'}
@@ -3183,11 +3180,11 @@ function describeScrapeProgress(p) {
                     </td>
                     <td
                       className="whitespace-nowrap px-4 py-3 text-neutral-600 dark:text-neutral-400"
-                      title={job.scraped_at ? `First seen ${timeAgo(job.scraped_at)} · last seen ${timeAgo(job.last_seen || job.scraped_at)}` : 'Scrape time unknown'}
+                      title={job.scraped_at ? `Scraped ${timeAgo(job.scraped_at)}` : 'Scrape time unknown'}
                     >
                       {fmtDateTime(job.scraped_at)}
                       <span className="block text-xs text-neutral-400 dark:text-neutral-500">
-                        seen {timeAgo(job.last_seen || job.scraped_at)}
+                        scraped {timeAgo(job.scraped_at)}
                         {isStale(job) && (
                           <span className="ml-1 rounded bg-amber-100 px-1 py-px font-medium text-amber-700 dark:bg-amber-900 dark:text-amber-300" title="Not seen in any scrape for 30+ days — link may be dead">
                             stale
