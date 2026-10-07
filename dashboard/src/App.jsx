@@ -128,12 +128,17 @@ function fmtDateTime(v) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-// Scraped-time sort key: numeric epoch ms, or null when missing/invalid
-// so rows without a time sort last (never NaN -- NaN poisons Array.sort
-// and leaves rows in API order, which looks "mixed up" in asc/desc).
-function scrapedTime(j) {
-  if (!j || !j.scraped_at) return null
-  const t = new Date(j.scraped_at).getTime()
+// Scraped-column sort key: last_seen (freshness) with scraped_at fallback.
+// Numeric epoch ms, or null when both missing/invalid so rows without a
+// time sort last (never NaN -- NaN poisons Array.sort and leaves rows in
+// API order, which looks "mixed up" in asc/desc). Note the column shows
+// scraped_at on top and last_seen in the "seen" subline, so the sort
+// follows the subline, not the top line.
+function scrapedSortTime(j) {
+  if (!j) return null
+  const raw = j.last_seen || j.scraped_at
+  if (!raw) return null
+  const t = new Date(raw).getTime()
   return Number.isNaN(t) ? null : t
 }
 
@@ -1228,7 +1233,7 @@ export default function App() {
     if (scrapedDir) {
       const dir = scrapedDir === 'asc' ? 1 : -1
       return [...jobsBase].sort((a, b) => {
-        const ta = scrapedTime(a), tb = scrapedTime(b)
+        const ta = scrapedSortTime(a), tb = scrapedSortTime(b)
         if (ta === null && tb === null) return (a.id ?? 0) - (b.id ?? 0)
         if (ta === null) return 1
         if (tb === null) return -1
@@ -1240,7 +1245,7 @@ export default function App() {
     return [...jobsBase].sort((a, b) => {
       const byScore = dir * ((a.score ?? 0) - (b.score ?? 0))
       if (byScore) return byScore
-      const ta = scrapedTime(a), tb = scrapedTime(b)
+      const ta = scrapedSortTime(a), tb = scrapedSortTime(b)
       if (ta === null && tb === null) return (a.id ?? 0) - (b.id ?? 0)
       if (ta === null) return 1
       if (tb === null) return -1
@@ -3107,7 +3112,7 @@ function describeScrapeProgress(p) {
                   <th className="px-4 py-3 font-medium">
                     <button
                       onClick={cycleScrapedSort}
-                      title="Sort by time scraped (rows without a time stay last)"
+                      title="Sort by last seen (freshness; rows without a time stay last)"
                       className="uppercase tracking-wide hover:text-neutral-800 dark:hover:text-neutral-200"
                     >
                       Scraped {scrapedDir === 'desc' ? '▼' : scrapedDir === 'asc' ? '▲' : '↕'}
