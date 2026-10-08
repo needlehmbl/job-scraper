@@ -513,7 +513,12 @@ def save_filtered_jobs(rows: list[dict], conn=None) -> int:
 
 
 def list_filtered_jobs(include_restored: bool = False, conn=None) -> list[dict]:
-    """Newest-first filtered postings; restored ones hidden unless asked for."""
+    """Newest-first filtered postings; restored ones hidden unless asked for.
+
+    Ties on filtered_at are broken by id so repeated fetches return a
+    stable order (whole scrape batches share a timestamp, and Postgres
+    orders ties arbitrarily -- without this the dashboard tab reshuffles
+    rows on every refresh/action)."""
     own = conn is None
     if own:
         conn = connect()
@@ -523,7 +528,7 @@ def list_filtered_jobs(include_restored: bool = False, conn=None) -> list[dict]:
                 """
                 SELECT * FROM filtered_jobs
                 WHERE (restored = FALSE OR %s)
-                ORDER BY filtered_at DESC
+                ORDER BY filtered_at DESC, id DESC
                 """,
                 (include_restored,),
             )

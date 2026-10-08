@@ -1150,15 +1150,20 @@ export default function App() {
       return matchesSearch(job, parsedSearch, pendingFilteredIndex.get(job.id))
     })
     let sorted = [...rows]
+    // Tie-break by id (newest first) so rows with equal dates keep a stable
+    // order across refetches -- matches the API's ORDER BY filtered_at DESC,
+    // id DESC. Without this, same-day/same-batch ties reshuffle on every
+    // dismiss/apply refresh or 60s poll, which reads as the table jumping.
+    const newestFirst = (a, b) => (b.id ?? 0) - (a.id ?? 0)
     if (filtPostedDir) {
       const dir = filtPostedDir === 'asc' ? 1 : -1
       const t = (j) => (j.date_posted ? new Date(j.date_posted).getTime() : null)
       sorted.sort((a, b) => {
         const ta = t(a), tb = t(b)
-        if (ta === null && tb === null) return 0
+        if (ta === null && tb === null) return newestFirst(a, b)
         if (ta === null) return 1
         if (tb === null) return -1
-        return dir * (ta - tb)
+        return dir * (ta - tb) || newestFirst(a, b)
       })
     }
     if (filtFilteredDir) {
@@ -1166,10 +1171,10 @@ export default function App() {
       const t = (j) => (j.filtered_at ? new Date(j.filtered_at).getTime() : null)
       sorted.sort((a, b) => {
         const ta = t(a), tb = t(b)
-        if (ta === null && tb === null) return 0
+        if (ta === null && tb === null) return newestFirst(a, b)
         if (ta === null) return 1
         if (tb === null) return -1
-        return dir * (ta - tb)
+        return dir * (ta - tb) || newestFirst(a, b)
       })
     }
     return sorted
